@@ -128,6 +128,10 @@ impl SnapshotProvider for DynSnapshotProvider {
     fn get_checkpoint_header(&self, block_number: u64) -> Option<alloy_consensus::Header> {
         self.inner.get_checkpoint_header(block_number)
     }
+
+    fn get_header_by_hash(&self, hash: &alloy_primitives::B256) -> Option<alloy_consensus::Header> {
+        self.inner.get_header_by_hash(hash)
+    }
 }
 
 /// Convenience type alias for ParliaApiImpl using the wrapper
