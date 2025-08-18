@@ -1,14 +1,15 @@
-use super::{ParliaHeaderValidator, SnapshotProvider, BscConsensusValidator, Snapshot, TransactionSplitter, SplitTransactions, VoteAttestation, constants::{DIFF_INTURN, DIFF_NOTURN, EXTRA_VANITY, EXTRA_SEAL, VALIDATOR_NUMBER_SIZE, VALIDATOR_BYTES_LEN_AFTER_LUBAN, VALIDATOR_BYTES_LEN_BEFORE_LUBAN, TURN_LENGTH_SIZE}};
-use super::error::ParliaConsensusError;
 use alloy_rlp::Decodable;
+use super::{ParliaHeaderValidator, SnapshotProvider, BscConsensusValidator, Snapshot, TransactionSplitter, SplitTransactions, VoteAttestation, ParliaConsensusError, constants::*};
 use alloy_consensus::{Header, TxReceipt, Transaction, BlockHeader};
+use alloy_primitives::{Address, Bytes};
+use rand::Rng;
 use reth_primitives_traits::{GotExpected, SignerRecoverable};
 use crate::{
     node::primitives::BscBlock,
     hardforks::BscHardforks,
     BscPrimitives,
-
 };
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use reth::consensus::{Consensus, FullConsensus, ConsensusError, HeaderValidator};
 use reth_primitives::Receipt;
 use reth_primitives_traits::proofs;
@@ -18,6 +19,9 @@ use reth_chainspec::EthChainSpec;
 use std::sync::Arc;
 use std::collections::HashMap;
 
+type SignFnPtr = fn(Address, &str, &[u8]) -> Result<[u8; 65], ConsensusError>;
+// type SignTxFnPtr = fn(Address, &mut dyn SignableTransaction<Signature>, u64) -> Result<Box<dyn SignableTransaction<Signature>>, ConsensusError>;
+
 /// Enhanced Parlia consensus that implements proper pre/post execution validation
 #[derive(Debug, Clone)]
 pub struct ParliaConsensus<ChainSpec, P> {
@@ -26,12 +30,16 @@ pub struct ParliaConsensus<ChainSpec, P> {
     consensus_validator: Arc<BscConsensusValidator<ChainSpec>>,
     snapshot_provider: Arc<P>,
     epoch: u64,
+
+    validator_address: Address,
+    sign_fn: SignFnPtr,
+    // sign_tx_fn: SignTxFnPtr,
 }
 
 impl<ChainSpec, P> ParliaConsensus<ChainSpec, P>
 where
-    ChainSpec: EthChainSpec + BscHardforks + 'static,
-    P: SnapshotProvider + std::fmt::Debug + 'static,
+    ChainSpec: EthChainSpec + BscHardforks + Send + Sync + 'static,
+    P: SnapshotProvider + std::fmt::Debug + Send + Sync + 'static,
 {
     pub fn new(
         chain_spec: Arc<ChainSpec>,
@@ -47,6 +55,9 @@ where
             consensus_validator,
             snapshot_provider,
             epoch,
+            validator_address: Address::ZERO,
+            sign_fn: Self::default_sign_fn,
+            // sign_tx_fn: Self::default_sign_tx_fn,
         };
         
         // Initialize genesis snapshot if needed
@@ -108,6 +119,14 @@ where
     pub fn snapshot_provider(&self) -> &Arc<P> {
         &self.snapshot_provider
     }
+
+    fn default_sign_fn(_: Address, _: &str, _: &[u8]) -> Result<[u8; 65], ConsensusError> {
+        Err(ConsensusError::Other("sign_fn not set".into()))
+    }
+
+    // fn default_sign_tx_fn(_: Address, _: &mut dyn SignableTransaction<Signature>, _: u64) -> Result<Box<dyn SignableTransaction<Signature>>, ConsensusError> {
+    //     Err(ConsensusError::Other("sign_tx_fn not set".into()))
+    // }
 
     /// Create genesis snapshot from BSC chain specification
     pub fn create_genesis_snapshot(chain_spec: Arc<ChainSpec>, epoch: u64) -> Result<crate::consensus::parlia::snapshot::Snapshot, ConsensusError> 
@@ -816,3 +835,155 @@ where
     }
 
 } 
+
+
+impl<ChainSpec, P> ParliaConsensus<ChainSpec, P>
+where
+    ChainSpec: EthChainSpec + BscHardforks + Send + Sync + 'static,
+    P: SnapshotProvider + std::fmt::Debug + Send + Sync + 'static,
+{
+    #[allow(unused_variables)]
+    pub fn seal(self,
+        block: &BscBlock,
+        results_sender: std::sync::mpsc::Sender<reth_primitives_traits::SealedBlock<BscBlock>>,
+        stop_receiver: std::sync::mpsc::Receiver<()>,
+    ) -> Result<(), ConsensusError> {
+        let header = block.header();
+        if header.number == 0 {
+            return Err(ConsensusError::Other("Unknown block (genesis sealing not supported)".into()));
+        }
+
+        let val     = self.validator_address;
+        let sign_fn = self.sign_fn;
+
+        let parent_number = header.number - 1;
+        let parent_hash   = header.parent_hash;
+        let snap = self.snapshot_provider.snapshot(parent_number)
+            .ok_or_else(|| ConsensusError::Other("Snapshot not found".into()))?;
+
+        if !snap.validators.contains(&val) {
+            return Err(ConsensusError::Other(format!("Unauthorized validator: {val}").into()));
+        }
+
+        if snap.sign_recently(val) {
+            tracing::info!("Signed recently, must wait for others");
+            return Ok(());
+        }
+
+        let delay = self.delay_for_ramanujan_fork(&snap, header);
+        tracing::info!(
+            target: "parlia::seal",
+            "Sealing block {} (delay {:?}, difficulty {:?})",
+            header.number,
+            delay,
+            header.difficulty
+        );
+
+        let block = block.clone();
+
+        std::thread::spawn(move || {
+            if let Ok(()) = stop_receiver.try_recv() {
+                return;
+            } else {
+                std::thread::sleep(delay);
+            }
+
+            let mut header = block.header().clone();
+            if let Err(e) = self.assemble_vote_attestation_stub(&header) {
+                tracing::error!(target: "parlia::seal", "Assemble vote attestation failed: {e}");
+            }
+
+            match sign_fn(val, "mimetype/parlia", &[]) {
+                Ok(sig) => {
+                    let mut extra = header.extra_data.to_vec();
+                    if extra.len() >= EXTRA_SEAL {
+                        let start = extra.len() - EXTRA_SEAL;
+                        extra[start..].copy_from_slice(&sig);
+                        header.extra_data = Bytes::from(extra);
+                    } else {
+                        tracing::error!(target: "parlia::seal", "extra_data too short to insert seal");
+                    }
+                }
+                Err(e) => tracing::debug!(target: "parlia::seal", "Sign for the block header failed when sealing, err {e}"),
+            }
+
+            // TODO
+            // if p.shouldWaitForCurrentBlockProcess(chain, header, snap) {
+            if !true {
+                let gas_used = 0;
+                let wait_process_estimate = (gas_used as f64 / 100_000_000f64).ceil();
+                tracing::info!(target: "parlia::seal", "Waiting for received in turn block to process waitProcessEstimate(Seconds) {wait_process_estimate}");
+                std::thread::sleep(Duration::from_secs(wait_process_estimate as u64));
+                if let Ok(()) = stop_receiver.try_recv() {
+                    tracing::info!(target: "parlia::seal", "Received block process finished, abort block seal");
+                    return;
+                }
+                //TODO:
+                let currend_header = 0;
+                if currend_header >= header.number() {
+                    tracing::info!(target: "parlia::seal", "Process backoff time exhausted, and current header has updated to abort this seal");
+                    return;
+                } else {
+                    tracing::info!(target: "parlia::seal", "Process backoff time exhausted, start to seal block");
+                }
+            }
+
+            // 5.e 发送结果
+            let _ = results_sender.send(BscBlock::new_sealed(SealedHeader::new_unhashed(header), block.body));
+        });
+
+        // 返回 Ok 表示已安排后台任务
+        Ok(())
+    }
+
+    fn delay_for_ramanujan_fork(&self, snapshot: &Snapshot, header: &Header) -> std::time::Duration {
+        let now_secs = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+
+        let mut delay = Duration::from_secs((header.timestamp as u64).saturating_sub(now_secs));
+
+        if self.chain_spec.is_ramanujan_active_at_block(header.number) {
+            return delay;
+        }
+
+        if header.difficulty == DIFF_NOTURN {
+            const FIXED_BACKOFF_TIME_BEFORE_FORK: Duration = Duration::from_millis(200);
+            const WIGGLE_TIME_BEFORE_FORK: u64 = 500 * 1000 * 1000; // 500 ms
+
+            let validators = snapshot.validators.len();
+            let rand_wiggle = rand::thread_rng().gen_range(0..(WIGGLE_TIME_BEFORE_FORK * (validators / 2 + 1) as u64));
+
+            delay += FIXED_BACKOFF_TIME_BEFORE_FORK + Duration::from_nanos(rand_wiggle);
+        }
+
+        delay
+    }
+
+
+    fn assemble_vote_attestation_stub(self, header: &alloy_consensus::Header) -> Result<(), ConsensusError> {
+        if !self.chain_spec.is_luban_active_at_block(header.number()) || header.number() < 2 {
+         return Ok(());
+        }
+
+        // TODO
+        // if self.vote_pool.is_none() {
+        //     return Ok(());
+        // }
+        let header = self.snapshot_provider.get_header_by_hash(&header.parent_hash)
+        .ok_or_else(|| ConsensusError::Other("parent not found".into()))?;
+        let _snap = self.snapshot_provider.snapshot(header.number-1)
+        .ok_or_else(|| ConsensusError::Other("Snapshot not found".into()))?;
+
+        //TODO
+        // votes := p.VotePool.FetchVoteByBlockHash(parent.Hash())
+        // if len(votes) < cmath.CeilDiv(len(snap.Validators)*2, 3) {
+        //     return nil
+        // }
+
+        Ok(())
+    }
+
+
+}

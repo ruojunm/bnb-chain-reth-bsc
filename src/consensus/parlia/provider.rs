@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use crate::chainspec::BscChainSpec;
 use crate::hardforks::BscHardforks;
+use alloy_primitives::B256;
 
 
 /// Trait for creating snapshots on-demand when parent snapshots are missing
@@ -35,6 +36,8 @@ pub trait SnapshotProvider: Send + Sync {
     /// Fetches header by block number for checkpoint parsing (like reth-bsc-trail's get_header_by_hash)
     // TODO: refine it later.
     fn get_checkpoint_header(&self, block_number: u64) -> Option<alloy_consensus::Header>;
+
+    fn get_header_by_hash(&self, _hash: &B256) -> Option<alloy_consensus::Header>;
 }
 
 /// `DbSnapshotProvider` wraps an MDBX database; it keeps a small in-memory LRU to avoid hitting
@@ -178,6 +181,10 @@ impl<DB: Database + 'static> SnapshotProvider for DbSnapshotProvider<DB> {
     
     fn get_checkpoint_header(&self, _block_number: u64) -> Option<alloy_consensus::Header> {
         unimplemented!("DbSnapshotProvider doesn't have access to headers");
+    }
+
+    fn get_header_by_hash(&self, _hash: &B256) -> Option<alloy_consensus::Header> {
+        None
     }
 }
 
@@ -330,5 +337,12 @@ impl<DB: Database + 'static> SnapshotProvider for EnhancedDbSnapshotProvider<DB>
         let header = crate::node::evm::util::HEADER_CACHE_READER.lock().unwrap().get_header_by_number(block_number);
         tracing::info!("Succeed to fetch header, is_none: {} for block {} in enhanced snapshot provider", header.is_none(), block_number);
         header
+    }
+
+    fn get_header_by_hash(&self, hash: &B256) -> Option<alloy_consensus::Header> {
+        match self.header_provider.header(hash) {
+            Ok(header) => header,
+            Err(_) => None,
+        }
     }
 }
