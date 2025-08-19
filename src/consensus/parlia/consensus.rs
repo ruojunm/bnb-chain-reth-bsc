@@ -1,7 +1,7 @@
 use alloy_rlp::Decodable;
 use super::{SnapshotProvider, Snapshot, VoteAttestation, ParliaConsensusError, constants::*};
 use alloy_consensus::{Header, TxReceipt, Transaction, BlockHeader};
-use alloy_primitives::{Address, Bytes};
+use alloy_primitives::{Address, Bytes, B256};
 use rand::Rng;
 use reth_primitives_traits::{GotExpected, SignerRecoverable};
 use crate::{
@@ -484,15 +484,11 @@ where
     }
 
 
-    fn assemble_vote_attestation_stub(self, header: &alloy_consensus::Header) -> Result<(), ConsensusError> {
+    fn assemble_vote_attestation_stub(&self, header: &alloy_consensus::Header) -> Result<(), ConsensusError> {
         if !self.chain_spec.is_luban_active_at_block(header.number()) || header.number() < 2 {
          return Ok(());
         }
 
-        // TODO
-        // if self.vote_pool.is_none() {
-        //     return Ok(());
-        // }
         let header = self.snapshot_provider.get_header_by_hash(&header.parent_hash)
         .ok_or_else(|| ConsensusError::Other("parent not found".into()))?;
         let _snap = self.snapshot_provider.snapshot(header.number-1)
@@ -503,8 +499,21 @@ where
         // if len(votes) < cmath.CeilDiv(len(snap.Validators)*2, 3) {
         //     return nil
         // }
+        let (justifiedBlockNumber, justifiedBlockHash) = match self.get_justified_number_and_hash(&header) {
+            Ok((a, b)) => (a, b),
+            Err(err) => return Err(err),
+        };
 
         Ok(())
     }
 
+<<<<<<< HEAD
+=======
+    fn get_justified_number_and_hash(&self, header: &alloy_consensus::Header) -> Result<(u64, B256), ConsensusError> {
+        let snap = self.snapshot_provider.snapshot(header.number-1)
+        .ok_or_else(|| ConsensusError::Other("Snapshot not found".into()))?;
+        Ok((snap.vote_data.target_number, snap.vote_data.target_hash))
+    }
+
+>>>>>>> 2a581e8 (adapt with vote)
 }
