@@ -13,39 +13,39 @@ name = "reth-bsc"
 path = "src/main.rs"
 
 [dependencies]
-reth = { git = "https://github.com/bnb-chain/reth", rev = "4f5d101b" }
-reth-cli = { git = "https://github.com/bnb-chain/reth", rev = "4f5d101b" }
-reth-cli-commands = { git = "https://github.com/bnb-chain/reth", rev = "4f5d101b" }
-reth-basic-payload-builder = { git = "https://github.com/bnb-chain/reth", rev = "4f5d101b" }
-reth-db = { git = "https://github.com/bnb-chain/reth", rev = "4f5d101b" }
-reth-engine-local = { git = "https://github.com/bnb-chain/reth", rev = "4f5d101b" }
-reth-chainspec = { git = "https://github.com/bnb-chain/reth", rev = "4f5d101b" }
-reth-cli-util = { git = "https://github.com/bnb-chain/reth", rev = "4f5d101b" }
-reth-discv4 = { git = "https://github.com/bnb-chain/reth", rev = "4f5d101b", features = ["test-utils"] }
-reth-engine-primitives = { git = "https://github.com/bnb-chain/reth", rev = "4f5d101b" }
-reth-ethereum-forks = { git = "https://github.com/bnb-chain/reth", rev = "4f5d101b", features = ["serde"] }
-reth-ethereum-payload-builder = { git = "https://github.com/bnb-chain/reth", rev = "4f5d101b" }
-reth-ethereum-primitives = { git = "https://github.com/bnb-chain/reth", rev = "4f5d101b" }
-reth-eth-wire = { git = "https://github.com/bnb-chain/reth", rev = "4f5d101b" }
-reth-eth-wire-types = { git = "https://github.com/bnb-chain/reth", rev = "4f5d101b" }
-reth-evm = { git = "https://github.com/bnb-chain/reth", rev = "4f5d101b" }
-reth-evm-ethereum = { git = "https://github.com/bnb-chain/reth", rev = "4f5d101b" }
-reth-node-core = { git = "https://github.com/bnb-chain/reth", rev = "4f5d101b" }
-reth-revm = { git = "https://github.com/bnb-chain/reth", rev = "4f5d101b" }
-reth-network = { git = "https://github.com/bnb-chain/reth", rev = "4f5d101b", features = ["test-utils"] }
-reth-network-p2p = { git = "https://github.com/bnb-chain/reth", rev = "4f5d101b" }
-reth-network-api = { git = "https://github.com/bnb-chain/reth", rev = "4f5d101b" }
-reth-node-ethereum = { git = "https://github.com/bnb-chain/reth", rev = "4f5d101b", features = ["test-utils"] }
-reth-network-peers = { git = "https://github.com/bnb-chain/reth", rev = "4f5d101b" }
-reth-payload-primitives = { git = "https://github.com/bnb-chain/reth", rev = "4f5d101b" }
-reth-primitives = { git = "https://github.com/bnb-chain/reth", rev = "4f5d101b" }
-reth-primitives-traits = { git = "https://github.com/bnb-chain/reth", rev = "4f5d101b" }
-reth-provider = { git = "https://github.com/bnb-chain/reth", rev = "4f5d101b", features = ["test-utils"] }
-reth-rpc-eth-api = { git = "https://github.com/bnb-chain/reth", rev = "4f5d101b" }
-reth-rpc-engine-api = { git = "https://github.com/bnb-chain/reth", rev = "4f5d101b" }
-reth-tracing = { git = "https://github.com/bnb-chain/reth", rev = "4f5d101b" }
-reth-trie-common = { git = "https://github.com/bnb-chain/reth", rev = "4f5d101b" }
-reth-trie-db = { git = "https://github.com/bnb-chain/reth", rev = "4f5d101b" }
+reth = { path = "../reth/bin/reth" }
+reth-cli = { path = "../reth/crates/cli/cli" }
+reth-cli-commands = { path = "../reth/crates/cli/commands" }
+reth-basic-payload-builder = { path = "../reth/crates/payload/basic" }
+reth-db = { path = "../reth/crates/storage/db" }
+reth-engine-local = { path = "../reth/crates/engine/local" }
+reth-chainspec = { path = "../reth/crates/chainspec" }
+reth-cli-util = { path = "../reth/crates/cli/util" }
+reth-discv4 = { path = "../reth/crates/net/discv4", features = ["test-utils"] }
+reth-engine-primitives = { path = "../reth/crates/engine/primitives" }
+reth-ethereum-forks = { path = "../reth/crates/ethereum/hardforks", features = ["serde"] }
+reth-ethereum-payload-builder = { path = "../reth/crates/ethereum/payload" }
+reth-ethereum-primitives = { path = "../reth/crates/ethereum/primitives" }
+reth-eth-wire = { path = "../reth/crates/net/eth-wire" }
+reth-eth-wire-types = { path = "../reth/crates/net/eth-wire-types" }
+reth-evm = { path = "../reth/crates/evm/evm" }
+reth-evm-ethereum = { path = "../reth/crates/ethereum/evm" }
+reth-node-core = { path = "../reth/crates/node/core" }
+reth-revm = { path = "../reth/crates/revm" }
+reth-network = { path = "../reth/crates/net/network", features = ["test-utils"] }
+reth-network-p2p = { path = "../reth/crates/net/p2p" }
+reth-network-api = { path = "../reth/crates/net/network-api" }
+reth-node-ethereum = { path = "../reth/crates/ethereum/node", features = ["test-utils"] }
+reth-network-peers = { path = "../reth/crates/net/peers" }
+reth-payload-primitives = { path = "../reth/crates/payload/primitives" }
+reth-primitives = { path = "../reth/crates/primitives" }
+reth-primitives-traits = { path = "../reth/crates/primitives-traits" }
+reth-provider = { path = "../reth/crates/storage/provider", features = ["test-utils"] }
+reth-rpc-eth-api = { path = "../reth/crates/rpc/rpc-eth-api" }
+reth-rpc-engine-api = { path = "../reth/crates/rpc/rpc-engine-api" }
+reth-tracing = { path = "../reth/crates/tracing" }
+reth-trie-common = { path = "../reth/crates/trie/common" }
+reth-trie-db = { path = "../reth/crates/trie/db" }
 revm = "28.0.1"
 
 # alloy dependencies
