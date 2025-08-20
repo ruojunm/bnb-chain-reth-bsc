@@ -26,11 +26,12 @@ type SignFnPtr = fn(Address, &str, &[u8]) -> Result<[u8; 65], ConsensusError>;
 
 /// Enhanced Parlia consensus that implements proper pre/post execution validation
 #[derive(Debug, Clone)]
-pub struct ParliaConsensus<ChainSpec, P> {
+pub struct ParliaConsensus<ChainSpec, P, Provider> {
     chain_spec: Arc<ChainSpec>,
     header_validator: Arc<ParliaHeaderValidator<ChainSpec>>,
     consensus_validator: Arc<BscConsensusValidator<ChainSpec>>,
     snapshot_provider: Arc<P>,
+    provider: Arc<Provider>,
     epoch: u64,
 
     validator_address: Address,
@@ -38,14 +39,16 @@ pub struct ParliaConsensus<ChainSpec, P> {
     // sign_tx_fn: SignTxFnPtr,
 }
 
-impl<ChainSpec, P> ParliaConsensus<ChainSpec, P>
+impl<ChainSpec, P, Provider> ParliaConsensus<ChainSpec, P, Provider>
 where
     ChainSpec: EthChainSpec + BscHardforks + Send + Sync + 'static,
     P: SnapshotProvider + std::fmt::Debug + Send + Sync + 'static,
+    Provider: reth_provider::BlockReader + reth_provider::HeaderProvider + Send + Sync + std::fmt::Debug + 'static,
 {
     pub fn new(
         chain_spec: Arc<ChainSpec>,
         snapshot_provider: Arc<P>,
+        provider: Arc<Provider>,
         epoch: u64,
     ) -> Self {
         let header_validator = Arc::new(ParliaHeaderValidator::new(chain_spec.clone()));
@@ -56,6 +59,7 @@ where
             header_validator,
             consensus_validator,
             snapshot_provider,
+            provider,
             epoch,
             validator_address: Address::ZERO,
             sign_fn: Self::default_sign_fn,
@@ -72,13 +76,14 @@ where
     pub fn with_database<DB: reth_db::database::Database + 'static>(
         chain_spec: Arc<ChainSpec>,
         database: DB,
+        provider: Arc<Provider>,
         epoch: u64,
         cache_size: usize,
-    ) -> ParliaConsensus<ChainSpec, crate::consensus::parlia::provider::DbSnapshotProvider<DB>> {
+    ) -> ParliaConsensus<ChainSpec, crate::consensus::parlia::provider::DbSnapshotProvider<DB>, Provider> {
         let snapshot_provider = Arc::new(
             crate::consensus::parlia::provider::DbSnapshotProvider::new(database, cache_size)
         );
-        let consensus = ParliaConsensus::new(chain_spec, snapshot_provider, epoch);
+        let consensus = ParliaConsensus::new(chain_spec, snapshot_provider, provider, epoch);
         
         // Initialize genesis snapshot if needed
         consensus.ensure_genesis_snapshot();
@@ -511,10 +516,11 @@ where
     }
 }
 
-impl<ChainSpec, P> super::ParliaConsensusObject for ParliaConsensus<ChainSpec, P>
+impl<ChainSpec, P, Provider> super::ParliaConsensusObject for ParliaConsensus<ChainSpec, P, Provider>
 where
     ChainSpec: EthChainSpec + BscHardforks + 'static,
     P: SnapshotProvider + std::fmt::Debug + 'static,
+    Provider: reth_provider::BlockReader + reth_provider::HeaderProvider + Send + Sync + std::fmt::Debug + 'static,
 {
     fn verify_cascading_fields(
         &self,
@@ -550,10 +556,11 @@ where
     }
 }
 
-impl<ChainSpec, P> HeaderValidator<Header> for ParliaConsensus<ChainSpec, P>
+impl<ChainSpec, P, Provider> HeaderValidator<Header> for ParliaConsensus<ChainSpec, P, Provider>
 where
     ChainSpec: EthChainSpec + BscHardforks + 'static,
     P: SnapshotProvider + std::fmt::Debug + 'static,
+    Provider: reth_provider::BlockReader + reth_provider::HeaderProvider + Send + Sync + std::fmt::Debug + 'static,
 {
     fn validate_header(&self, header: &SealedHeader<Header>) -> Result<(), ConsensusError> {
         self.header_validator.validate_header(header)
@@ -568,10 +575,11 @@ where
     }
 }
 
-impl<ChainSpec, P> Consensus<BscBlock> for ParliaConsensus<ChainSpec, P>
+impl<ChainSpec, P, Provider> Consensus<BscBlock> for ParliaConsensus<ChainSpec, P, Provider>
 where
     ChainSpec: EthChainSpec + BscHardforks + 'static,
     P: SnapshotProvider + std::fmt::Debug + 'static,
+    Provider: reth_provider::BlockReader + reth_provider::HeaderProvider + Send + Sync + std::fmt::Debug + 'static,
 {
     type Error = ConsensusError;
 
@@ -592,10 +600,11 @@ where
     }
 }
 
-impl<ChainSpec, P> FullConsensus<BscPrimitives> for ParliaConsensus<ChainSpec, P>
+impl<ChainSpec, P, Provider> FullConsensus<BscPrimitives> for ParliaConsensus<ChainSpec, P, Provider>
 where
     ChainSpec: EthChainSpec + BscHardforks + 'static,
     P: SnapshotProvider + std::fmt::Debug + 'static,
+    Provider: reth_provider::BlockReader + reth_provider::HeaderProvider + Send + Sync + std::fmt::Debug + 'static,
 {
     fn validate_block_post_execution(
         &self,
@@ -607,10 +616,11 @@ where
 }
 
 // Additional BSC validation methods
-impl<ChainSpec, P> ParliaConsensus<ChainSpec, P>
+impl<ChainSpec, P, Provider> ParliaConsensus<ChainSpec, P, Provider>
 where
     ChainSpec: EthChainSpec + BscHardforks + 'static,
     P: SnapshotProvider + std::fmt::Debug + 'static,
+    Provider: reth_provider::BlockReader + reth_provider::HeaderProvider + Send + Sync + std::fmt::Debug + 'static,
 {
     /// Get parent header for validation (following bsc-erigon approach)
     fn get_parent_header(&self, header: &alloy_consensus::Header) -> Option<SealedHeader<alloy_consensus::Header>> {
@@ -839,10 +849,11 @@ where
 } 
 
 
-impl<ChainSpec, P> ParliaConsensus<ChainSpec, P>
+impl<ChainSpec, P, Provider> ParliaConsensus<ChainSpec, P, Provider>
 where
     ChainSpec: EthChainSpec + BscHardforks + Send + Sync + 'static,
     P: SnapshotProvider + std::fmt::Debug + Send + Sync + 'static,
+    Provider: reth_provider::BlockReader + reth_provider::HeaderProvider + Send + Sync + std::fmt::Debug + 'static,
 {
     #[allow(unused_variables)]
     pub fn seal(self,
@@ -854,6 +865,20 @@ where
         if header.number == 0 {
             return Err(ConsensusError::Other("Unknown block (genesis sealing not supported)".into()));
         }
+
+        // Get the highest verified header (latest inserted block) for validator logic
+        let latest_block_number = self.provider.last_block_number()
+            .map_err(|e| ConsensusError::Other(format!("Failed to get latest block number: {}", e).into()))?;
+        let highest_verified_header = self.provider.header_by_number(latest_block_number)
+            .map_err(|e| ConsensusError::Other(format!("Failed to get highest verified header: {}", e).into()))?
+            .ok_or_else(|| ConsensusError::Other("No verified header found".into()))?;
+        
+        tracing::debug!(
+            target: "parlia::seal",
+            "Sealing block {} with highest verified header at {}",
+            header.number,
+            highest_verified_header.number()
+        );
 
         let val     = self.validator_address;
         let sign_fn = self.sign_fn;
@@ -953,7 +978,7 @@ where
             const WIGGLE_TIME_BEFORE_FORK: u64 = 500 * 1000 * 1000; // 500 ms
 
             let validators = snapshot.validators.len();
-            let rand_wiggle = rand::thread_rng().gen_range(0..(WIGGLE_TIME_BEFORE_FORK * (validators / 2 + 1) as u64));
+            let rand_wiggle = rand::rng().random_range(0..(WIGGLE_TIME_BEFORE_FORK * (validators / 2 + 1) as u64));
 
             delay += FIXED_BACKOFF_TIME_BEFORE_FORK + Duration::from_nanos(rand_wiggle);
         }
@@ -979,15 +1004,15 @@ where
         // }
         let votes: Vec<VoteEnvelope> = Vec::new();
 
-        let (justifiedBlockNumber, justifiedBlockHash) = match self.get_justified_number_and_hash(&parent) {
+        let (justified_block_number, justified_block_hash) = match self.get_justified_number_and_hash(&parent) {
             Ok((a, b)) => (a, b),
             Err(err) => return Err(err),
         };
 
         let mut attestation = VoteAttestation::new_with_vote_data(
             VoteData{
-                source_hash: justifiedBlockHash,
-                source_number: justifiedBlockNumber,
+                source_hash: justified_block_hash,
+                source_number: justified_block_number,
                 target_hash: parent.mix_hash,
                 target_number: parent.number,
         });

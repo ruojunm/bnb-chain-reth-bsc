@@ -34,9 +34,10 @@ where
                 panic!("Failed to initialize on-demand MDBX snapshots: {}", e);
             });
 
-        let consensus_concrete: ParliaConsensus<_, _> = ParliaConsensus::new(
+        let consensus_concrete: ParliaConsensus<_, _, _> = ParliaConsensus::new(
             ctx.chain_spec(),
             snapshot_provider.clone(),
+            Arc::new(ctx.provider().clone()),
             EPOCH, // BSC epoch length (200 blocks)
         );
 

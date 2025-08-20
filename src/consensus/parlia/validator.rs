@@ -1,5 +1,5 @@
 use super::{EXTRA_SEAL, EXTRA_VANITY};
-use alloy_primitives::{Address, B256};
+use alloy_primitives::{Address};
 use reth::consensus::{ConsensusError, HeaderValidator};
 use reth_primitives_traits::SealedHeader;
 use std::sync::Arc;

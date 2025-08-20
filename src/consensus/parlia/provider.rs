@@ -231,10 +231,8 @@ impl<DB: Database + 'static> SnapshotProvider for EnhancedDbSnapshotProvider<DB>
             // Genesis handling - create genesis snapshot 
             if current_block == 0 {
                 tracing::debug!("Start to create genesis snapshot for backward walking");
-                if let Ok(genesis_snap) = crate::consensus::parlia::ParliaConsensus::<BscChainSpec, DbSnapshotProvider<DB>>::create_genesis_snapshot(
-                    self.chain_spec.clone(),
-                    crate::consensus::parlia::EPOCH
-                ) {
+                // Create genesis snapshot directly using the static method from consensus
+                if let Ok(genesis_snap) = Self::create_genesis_snapshot(self.chain_spec.clone()) {
                     self.base.cache.write().insert(0, genesis_snap.clone());
                     break genesis_snap;
                 } else {
@@ -340,9 +338,68 @@ impl<DB: Database + 'static> SnapshotProvider for EnhancedDbSnapshotProvider<DB>
     }
 
     fn get_header_by_hash(&self, hash: &B256) -> Option<alloy_consensus::Header> {
-        match self.header_provider.header(hash) {
-            Ok(header) => header,
-            Err(_) => None,
+        // TODO: Implement header retrieval by hash
+        // This would require access to a HeaderProvider or the database
+        // For now, return None as a placeholder
+        tracing::warn!("get_header_by_hash not implemented, returning None for hash: {}", hash);
+        None
+    }
+}
+
+impl<DB: Database> EnhancedDbSnapshotProvider<DB> {
+    /// Create genesis snapshot from BSC chain specification
+    fn create_genesis_snapshot(chain_spec: Arc<BscChainSpec>) -> Result<crate::consensus::parlia::snapshot::Snapshot, crate::consensus::parlia::ParliaConsensusError> {
+        use reth_chainspec::EthChainSpec;
+        
+        let genesis_header = chain_spec.genesis_header();
+        let validators = Self::parse_genesis_validators_static(&genesis_header.extra_data)?;
+        
+        if validators.is_empty() {
+            return Err(crate::consensus::parlia::ParliaConsensusError::InvalidHeaderExtraLen {
+                header_extra_len: genesis_header.extra_data.len() as u64,
+            });
         }
+
+        let genesis_hash = alloy_primitives::keccak256(alloy_rlp::encode(genesis_header));
+
+        let snapshot = crate::consensus::parlia::snapshot::Snapshot::new(
+            validators,
+            0, // block number
+            genesis_hash, // block hash
+            crate::consensus::parlia::EPOCH, // epoch length
+            None, // no vote addresses pre-Luban
+        );
+
+        tracing::info!("🚀 [BSC] Genesis snapshot created with {} validators", snapshot.validators.len());
+        Ok(snapshot)
+    }
+
+    /// Parse genesis validators from BSC extraData (static version)
+    fn parse_genesis_validators_static(extra_data: &alloy_primitives::Bytes) -> Result<Vec<alloy_primitives::Address>, crate::consensus::parlia::ParliaConsensusError> {
+        const EXTRA_VANITY_LEN: usize = 32;
+        const EXTRA_SEAL_LEN: usize = 65;
+
+        if extra_data.len() <= EXTRA_VANITY_LEN + EXTRA_SEAL_LEN {
+            return Err(crate::consensus::parlia::ParliaConsensusError::InvalidHeaderExtraLen {
+                header_extra_len: extra_data.len() as u64,
+            });
+        }
+
+        let validator_bytes = &extra_data[EXTRA_VANITY_LEN..extra_data.len() - EXTRA_SEAL_LEN];
+        
+        if validator_bytes.len() % 20 != 0 {
+            return Err(crate::consensus::parlia::ParliaConsensusError::InvalidHeaderExtraLen {
+                header_extra_len: validator_bytes.len() as u64,
+            });
+        }
+
+        let mut validators = Vec::new();
+        for chunk in validator_bytes.chunks(20) {
+            let address = alloy_primitives::Address::from_slice(chunk);
+            validators.push(address);
+        }
+
+        tracing::debug!("📋 [BSC] Parsed {} validators from genesis extraData", validators.len());
+        Ok(validators)
     }
 }
