@@ -157,10 +157,10 @@ where
         self.validate_basic_post_execution_fields(block, receipts)?;
 
 
-        tracing::info!("This might be useless - start");
-        // 2. BSC-specific post-execution validation
-        self.validate_parlia_post_execution_fields(block, receipts)?;
-        tracing::info!("This might be useless - end");
+        // tracing::info!("This might be useless - start");
+        // // 2. BSC-specific post-execution validation
+        // self.validate_parlia_post_execution_fields(block, receipts)?;
+        // tracing::info!("This might be useless - end");
 
         Ok(())
     }
