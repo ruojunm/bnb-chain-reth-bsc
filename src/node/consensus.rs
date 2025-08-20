@@ -39,6 +39,14 @@ where
             .unwrap_or_else(|e| {
                 panic!("Failed to initialize on-demand MDBX snapshots: {}", e);
             });
+
+        let consensus_concrete: ParliaConsensus<_, _, _> = ParliaConsensus::new(
+            ctx.chain_spec(),
+            snapshot_provider.clone(),
+            Arc::new(ctx.provider().clone()),
+            EPOCH, // BSC epoch length (200 blocks)
+        );
+
         // Store the snapshot provider globally so RPC can access it
         let _ = crate::shared::set_snapshot_provider(
             snapshot_provider as Arc<dyn crate::consensus::parlia::SnapshotProvider + Send + Sync>,
