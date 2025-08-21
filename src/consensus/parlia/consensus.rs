@@ -14,7 +14,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use reth::consensus::{Consensus, FullConsensus, ConsensusError, HeaderValidator};
 use reth_primitives::Receipt;
 use reth_primitives_traits::proofs;
-use reth_provider::BlockExecutionResult;
+use reth_provider::{BlockExecutionResult, HeaderProvider};
 use reth_primitives_traits::{Block, SealedBlock, SealedHeader, RecoveredBlock};
 use reth_chainspec::EthChainSpec;
 use std::sync::Arc;
@@ -866,20 +866,6 @@ where
             return Err(ConsensusError::Other("Unknown block (genesis sealing not supported)".into()));
         }
 
-        // Get the highest verified header (latest inserted block) for validator logic
-        let latest_block_number = self.provider.last_block_number()
-            .map_err(|e| ConsensusError::Other(format!("Failed to get latest block number: {}", e).into()))?;
-        let highest_verified_header = self.provider.header_by_number(latest_block_number)
-            .map_err(|e| ConsensusError::Other(format!("Failed to get highest verified header: {}", e).into()))?
-            .ok_or_else(|| ConsensusError::Other("No verified header found".into()))?;
-        
-        tracing::debug!(
-            target: "parlia::seal",
-            "Sealing block {} with highest verified header at {}",
-            header.number,
-            highest_verified_header.number()
-        );
-
         let val     = self.validator_address;
         let sign_fn = self.sign_fn;
 
@@ -935,9 +921,14 @@ where
             }
 
             // TODO
+            let option_highest_verified_header = self.get_highest_verified_header();
+            
             // if p.shouldWaitForCurrentBlockProcess(chain, header, snap) {
-            if !true {
-                let gas_used = 0;
+            if self.should_wait_for_current_block_process(&header, &option_highest_verified_header) {
+                let gas_used = match option_highest_verified_header {
+                    Some(h) => h.gas_used(),
+                    _ => 0,
+                };
                 let wait_process_estimate = (gas_used as f64 / 100_000_000f64).ceil();
                 tracing::info!(target: "parlia::seal", "Waiting for received in turn block to process waitProcessEstimate(Seconds) {wait_process_estimate}");
                 std::thread::sleep(Duration::from_secs(wait_process_estimate as u64));
@@ -959,6 +950,32 @@ where
         });
 
         Ok(())
+    }
+
+    fn get_highest_verified_header(&self) -> Option<<Provider as HeaderProvider>::Header> {
+        let latest_block_number = match self.provider.last_block_number()
+            .map_err(|e| ConsensusError::Other(format!("Failed to get latest block number: {}", e).into())) {
+                Ok(r) => r,
+                Err(_) => return None,
+            };
+        match self.provider.header_by_number(latest_block_number) {
+            Ok(h) => h,
+            Err(_) => {
+                None
+            }
+        }
+    }
+
+    fn should_wait_for_current_block_process(&self, header: &Header, option_highest_verified_header: &Option<<Provider as HeaderProvider>::Header>) -> bool {
+        if let Some(highest_verified_header) = option_highest_verified_header {
+            if header.difficulty == alloy_primitives::U256::from(2) {
+                return false;
+            }
+            if header.parent_hash == highest_verified_header.parent_hash() {
+                return true;
+            }
+        };
+        false
     }
 
     fn delay_for_ramanujan_fork(&self, snapshot: &Snapshot, header: &Header) -> std::time::Duration {
