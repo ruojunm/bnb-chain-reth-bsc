@@ -14,36 +14,40 @@ use reth::consensus::ConsensusError;
 use reth_chainspec::EthChainSpec;
 use reth_primitives_traits::{Block, SealedHeader};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use reth::providers::BlockNumReader;
 
 type SignFnPtr = fn(Address, &str, &[u8]) -> Result<[u8; 65], ConsensusError>;
 // type SignTxFnPtr = fn(Address, &mut dyn SignableTransaction<Signature>, u64) -> Result<Box<dyn SignableTransaction<Signature>>, ConsensusError>;
 
-pub struct SealBlock<P, ChainSpec> {
+pub struct SealBlock<P, ChainSpec, Provider> {
     snapshot_provider: P,
     chain_spec: ChainSpec,
+    provider: Provider,
 
     validator_address: Address,
     sign_fn: SignFnPtr,
 }
 
-impl<P, ChainSpec> SealBlock<P, ChainSpec>
+impl<P, ChainSpec, Provider> SealBlock<P, ChainSpec, Provider>
 where
     ChainSpec: EthChainSpec + BscHardforks + Send + Sync + 'static,
     P: SnapshotProvider + std::fmt::Debug + Send + Sync + 'static,
+    Provider: BlockNumReader + Clone + Send + Sync + 'static,
 {
     #[allow(dead_code)]
-    fn new(snapshot_provider: P, chain_spec: ChainSpec, validator_address: Address) -> Self {
-        Self { snapshot_provider, chain_spec, validator_address, sign_fn: default_sign_fn }
+    fn new(snapshot_provider: P, chain_spec: ChainSpec, provider: Provider, validator_address: Address) -> Self {
+        Self { snapshot_provider, chain_spec, provider, validator_address, sign_fn: default_sign_fn }
     }
 
     #[allow(dead_code)]
     fn new_with_sign_fn(
         snapshot_provider: P,
         chain_spec: ChainSpec,
+        provider: Provider,
         validator_address: Address,
         sign_fn: SignFnPtr,
     ) -> Self {
-        Self { snapshot_provider, chain_spec, validator_address, sign_fn }
+        Self { snapshot_provider, chain_spec, provider, validator_address, sign_fn }
     }
 
     #[allow(dead_code)]
@@ -136,8 +140,10 @@ where
                     tracing::info!(target: "parlia::seal", "Received block process finished, abort block seal");
                     return;
                 }
-                //TODO:
-                let current_header = 0;
+                let current_header = self.provider.last_block_number().unwrap_or_else(|e| {
+                    tracing::info!(target: "parlia::seal", "Get last block number failed, err {e}");
+                    header.number()+1
+                });
                 if current_header >= header.number() {
                     tracing::info!(target: "parlia::seal", "Process backoff time exhausted, and current header has updated to abort this seal");
                     return;
@@ -155,7 +161,13 @@ where
 
     fn get_highest_verified_header(&self) -> Option<alloy_consensus::Header> {
         // TODO: latest_block_number
-        let latest_block_number: u64 = 0;
+        let latest_block_number = self.provider.last_block_number().unwrap_or_else(|e| {
+            tracing::info!(target: "parlia::seal", "Get last block number failed, err {e}");
+            0
+        });
+        if latest_block_number == 0 {
+            return None;
+        }
         self.snapshot_provider.get_header(latest_block_number)
     }
 
