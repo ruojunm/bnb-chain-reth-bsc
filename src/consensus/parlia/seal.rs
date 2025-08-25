@@ -104,7 +104,7 @@ where
                 std::thread::sleep(delay);
             }
 
-            let mut header = block.header().clone();
+            let mut header = block.header;
             if let Err(e) = self.assemble_vote_attestation_stub(&mut header) {
                 tracing::error!(target: "parlia::seal", "Assemble vote attestation failed: {e}");
             }
@@ -152,15 +152,15 @@ where
                 }
             }
 
+            let block_hash = header.hash_slow();
             let _ = results_sender
-                .send(BscBlock::new_sealed(SealedHeader::new_unhashed(header), block.body));
+                .send(BscBlock::new_sealed(SealedHeader::new(header, block_hash), block.body));
         });
 
         Ok(())
     }
 
     fn get_highest_verified_header(&self) -> Option<alloy_consensus::Header> {
-        // TODO: latest_block_number
         let latest_block_number = self.provider.last_block_number().unwrap_or_else(|e| {
             tracing::info!(target: "parlia::seal", "Get last block number failed, err {e}");
             0
