@@ -1530,6 +1530,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "bindgen"
+version = "0.72.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4f72209734318d0b619a5e0f5129918b848c416e122a3c4ce054e03cb87b726f"
+dependencies = [
+ "bitflags 2.9.2",
+ "cexpr",
+ "clang-sys",
+ "itertools 0.13.0",
+ "proc-macro2",
+ "quote",
+ "regex",
+ "rustc-hash 2.1.1",
+ "shlex",
+ "syn 2.0.106",
+]
+
+[[package]]
 name = "bit-set"
 version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1917,6 +1935,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d71b6127be86fdcfddb610f7182ac57211d4b18a3e9c82eb2d17662f2227ad6a"
 dependencies = [
  "serde",
+]
+
+[[package]]
+name = "bzip2-sys"
+version = "0.1.13+1.0.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "225bff33b2141874fe80d71e07d6eec4f85c5c216453dd96388240f96e1acc14"
+dependencies = [
+ "cc",
+ "pkg-config",
 ]
 
 [[package]]
@@ -4932,7 +4960,7 @@ version = "0.14.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e78a09b56be5adbcad5aa1197371688dc6bb249a26da3bca2011ee2fb987ebfb"
 dependencies = [
- "bindgen",
+ "bindgen 0.70.1",
  "errno",
  "libc",
 ]
@@ -4946,6 +4974,21 @@ dependencies = [
  "bitflags 2.9.2",
  "libc",
  "redox_syscall",
+]
+
+[[package]]
+name = "librocksdb-sys"
+version = "0.17.3+10.4.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cef2a00ee60fe526157c9023edab23943fae1ce2ab6f4abb2a807c1746835de9"
+dependencies = [
+ "bindgen 0.72.0",
+ "bzip2-sys",
+ "cc",
+ "libc",
+ "libz-sys",
+ "lz4-sys",
+ "zstd-sys",
 ]
 
 [[package]]
@@ -6810,6 +6853,7 @@ dependencies = [
  "reth-trie",
  "revm-database",
  "revm-state",
+ "rust-eth-triedb-state-trie",
  "serde",
  "tokio",
  "tokio-stream",
@@ -7102,6 +7146,7 @@ dependencies = [
  "alloy-consensus",
  "alloy-genesis",
  "alloy-primitives",
+ "alloy-trie",
  "boyer-moore-magiclen",
  "eyre",
  "reth-chainspec",
@@ -7118,6 +7163,7 @@ dependencies = [
  "reth-static-file-types",
  "reth-trie",
  "reth-trie-db",
+ "rust-eth-triedb-state-trie",
  "serde",
  "serde_json",
  "thiserror 2.0.15",
@@ -7385,6 +7431,7 @@ dependencies = [
  "reth-trie-sparse-parallel",
  "revm",
  "revm-primitives",
+ "rust-eth-triedb-state-trie",
  "schnellru",
  "thiserror 2.0.15",
  "tokio",
@@ -7845,7 +7892,7 @@ dependencies = [
 name = "reth-mdbx-sys"
 version = "1.6.0"
 dependencies = [
- "bindgen",
+ "bindgen 0.70.1",
  "cc",
 ]
 
@@ -8440,6 +8487,8 @@ dependencies = [
  "reth-trie-db",
  "revm-database",
  "revm-state",
+ "rust-eth-triedb",
+ "rust-eth-triedb-pathdb",
  "strum 0.27.2",
  "tokio",
  "tracing",
@@ -8978,6 +9027,8 @@ dependencies = [
  "reth-trie-common",
  "reth-trie-db",
  "revm-database",
+ "rust-eth-triedb",
+ "rust-eth-triedb-pathdb",
 ]
 
 [[package]]
@@ -9657,6 +9708,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "rocksdb"
+version = "0.24.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ddb7af00d2b17dbd07d82c0063e25411959748ff03e8d4f96134c2ff41fce34f"
+dependencies = [
+ "libc",
+ "librocksdb-sys",
+]
+
+[[package]]
 name = "rolling-file"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -9716,6 +9777,72 @@ name = "ruint-macro"
 version = "1.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "48fd7bd8a6377e15ad9d42a8ec25371b94ddc67abe7c8b9127bec79bebaaae18"
+
+[[package]]
+name = "rust-eth-triedb"
+version = "0.1.0"
+dependencies = [
+ "alloy-primitives",
+ "alloy-trie",
+ "once_cell",
+ "rayon",
+ "reth-trie-common",
+ "rust-eth-triedb-common",
+ "rust-eth-triedb-pathdb",
+ "rust-eth-triedb-state-trie",
+ "serde",
+ "thiserror 1.0.69",
+]
+
+[[package]]
+name = "rust-eth-triedb-common"
+version = "0.1.0"
+dependencies = [
+ "alloy-primitives",
+ "auto_impl",
+ "thiserror 1.0.69",
+]
+
+[[package]]
+name = "rust-eth-triedb-memorydb"
+version = "0.1.0"
+dependencies = [
+ "alloy-primitives",
+ "auto_impl",
+ "parking_lot",
+ "rust-eth-triedb-common",
+ "thiserror 1.0.69",
+]
+
+[[package]]
+name = "rust-eth-triedb-pathdb"
+version = "0.1.0"
+dependencies = [
+ "alloy-primitives",
+ "rocksdb",
+ "rust-eth-triedb-common",
+ "schnellru",
+ "tempfile",
+ "thiserror 1.0.69",
+ "tracing",
+]
+
+[[package]]
+name = "rust-eth-triedb-state-trie"
+version = "0.1.0"
+dependencies = [
+ "alloy-primitives",
+ "alloy-rlp",
+ "alloy-trie",
+ "auto_impl",
+ "hex 0.4.3",
+ "rand 0.8.5",
+ "rayon",
+ "rust-eth-triedb-common",
+ "rust-eth-triedb-memorydb",
+ "rust-eth-triedb-pathdb",
+ "thiserror 1.0.69",
+]
 
 [[package]]
 name = "rustc-demangle"
