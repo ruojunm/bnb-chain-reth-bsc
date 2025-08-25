@@ -1,9 +1,9 @@
-use std::sync::Arc;
 use super::{
-    constants::{EXTRA_SEAL_LEN, DIFF_NOTURN},
+    constants::{DIFF_NOTURN, EXTRA_SEAL_LEN},
     Snapshot, SnapshotProvider, VoteAddress, VoteAttestation, VoteData, VoteEnvelope,
     VoteSignature,
 };
+use crate::consensus::parlia::util::encode_header_with_chain_id;
 use crate::{hardforks::BscHardforks, BscBlock};
 use alloy_consensus::{BlockHeader, Header};
 use alloy_primitives::{
@@ -11,46 +11,47 @@ use alloy_primitives::{
     Address, Bytes, B256,
 };
 use blst::min_pk::{AggregateSignature, Signature as blsSignature};
+use bytes::BytesMut;
 use rand::Rng;
 use reth::consensus::ConsensusError;
-use reth_primitives_traits::{Block, SealedHeader};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use reth::providers::BlockNumReader;
+use reth_chainspec::EthChainSpec;
 use reth_primitives::SealedBlock;
+use reth_primitives_traits::{Block, SealedHeader};
+use std::sync::Arc;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 type SignFnPtr = fn(Address, &str, &[u8]) -> Result<[u8; 65], ConsensusError>;
-// type SignTxFnPtr = fn(Address, &mut dyn SignableTransaction<Signature>, u64) -> Result<Box<dyn SignableTransaction<Signature>>, ConsensusError>;
 
 #[derive(Clone, Debug)]
-pub struct SealBlock<P, ChainSpec, Provider> {
-    snapshot_provider: P,
+pub struct SealBlock<ChainSpec> {
+    snapshot_provider: Arc<dyn SnapshotProvider + Send + Sync>,
     chain_spec: Arc<ChainSpec>,
-    provider: Provider,
 
     validator_address: Address,
     sign_fn: SignFnPtr,
 }
 
-impl<P, ChainSpec, Provider> SealBlock<P, ChainSpec, Provider>
+impl<ChainSpec> SealBlock<ChainSpec>
 where
-    ChainSpec: BscHardforks + Send + Sync + 'static,
-    P: SnapshotProvider + std::fmt::Debug + Send + Sync + 'static,
-    Provider: BlockNumReader + Clone + Send + Sync + 'static,
+    ChainSpec: EthChainSpec + BscHardforks,
 {
     #[allow(dead_code)]
-    fn new(snapshot_provider: P, chain_spec: Arc<ChainSpec>, provider: Provider, validator_address: Address) -> Self {
-        Self { snapshot_provider, chain_spec, provider, validator_address, sign_fn: default_sign_fn }
+    pub(crate) fn new(
+        snapshot_provider: Arc<dyn SnapshotProvider + Send + Sync>,
+        chain_spec: Arc<ChainSpec>,
+        validator_address: Address,
+    ) -> Self {
+        Self { snapshot_provider, chain_spec, validator_address, sign_fn: default_sign_fn }
     }
 
     #[allow(dead_code)]
-    fn new_with_sign_fn(
-        snapshot_provider: P,
+    pub(crate) fn new_with_sign_fn(
+        snapshot_provider: Arc<dyn SnapshotProvider + Send + Sync>,
         chain_spec: Arc<ChainSpec>,
-        provider: Provider,
         validator_address: Address,
         sign_fn: SignFnPtr,
     ) -> Self {
-        Self { snapshot_provider, chain_spec, provider, validator_address, sign_fn }
+        Self { snapshot_provider, chain_spec, validator_address, sign_fn }
     }
 
     #[allow(dead_code)]
@@ -58,10 +59,7 @@ where
         self.sign_fn = sign_fn;
     }
 
-    pub fn seal(
-        self,
-        block: BscBlock,
-    ) -> Result<(SealedBlock<BscBlock>), ConsensusError> {
+    pub fn seal(self, block: BscBlock) -> Result<SealedBlock<BscBlock>, ConsensusError> {
         let header = block.header();
         if header.number == 0 {
             return Err(ConsensusError::Other(
@@ -84,7 +82,9 @@ where
 
         if snap.sign_recently(val) {
             tracing::info!("Signed recently, must wait for others");
-            return Err(ConsensusError::Other(format!("Signed recently, must wait for others, validator: {val}").into()));
+            return Err(ConsensusError::Other(
+                format!("Signed recently, must wait for others, validator: {val}").into(),
+            ));
         }
 
         let delay = self.delay_for_ramanujan_fork(&snap, header);
@@ -103,7 +103,9 @@ where
             tracing::error!(target: "parlia::seal", "Assemble vote attestation failed: {e}");
         }
 
-        match sign_fn(val, "mimetype/parlia", &[]) {
+        let mut out = BytesMut::new();
+        encode_header_with_chain_id(&header, &mut out, self.chain_spec.chain_id());
+        match sign_fn(val, "mimetype/parlia", out.iter().as_slice()) {
             Ok(sig) => {
                 let mut extra = header.extra_data.to_vec();
                 if extra.len() >= EXTRA_SEAL_LEN {
@@ -119,66 +121,11 @@ where
             }
         }
 
-        let option_highest_verified_header = self.get_highest_verified_header();
-
-        if self.should_wait_for_current_block_process(&header, &option_highest_verified_header)
-        {
-            let gas_used = match option_highest_verified_header {
-                Some(h) => h.gas_used(),
-                _ => 0,
-            };
-            let wait_process_estimate = (gas_used as f64 / 100_000_000f64).ceil();
-            tracing::info!(target: "parlia::seal", "Waiting for received in turn block to process waitProcessEstimate(Seconds) {wait_process_estimate}");
-
-            std::thread::sleep(Duration::from_secs(wait_process_estimate as u64));
-            let current_header = self.provider.last_block_number().unwrap_or_else(|e| {
-                tracing::info!(target: "parlia::seal", "Get last block number failed, err {e}");
-                header.number()+1
-            });
-            if current_header >= header.number() {
-                tracing::info!(target: "parlia::seal", "Process backoff time exhausted, and current header has updated to abort this seal");
-                return Err(ConsensusError::Other("Process backoff time exhausted, and current header has updated to abort this seal".to_string()));
-            } else {
-                tracing::info!(target: "parlia::seal", "Process backoff time exhausted, start to seal block");
-            }
-        }
-
         let block_hash = header.hash_slow();
         Ok(BscBlock::new_sealed(SealedHeader::new(header, block_hash), block.body))
     }
 
-    fn get_highest_verified_header(&self) -> Option<Header> {
-        let latest_block_number = self.provider.last_block_number().unwrap_or_else(|e| {
-            tracing::info!(target: "parlia::seal", "Get last block number failed, err {e}");
-            0
-        });
-        if latest_block_number == 0 {
-            return None;
-        }
-        self.snapshot_provider.get_header(latest_block_number)
-    }
-
-    fn should_wait_for_current_block_process(
-        &self,
-        header: &Header,
-        option_highest_verified_header: &Option<Header>,
-    ) -> bool {
-        if let Some(highest_verified_header) = option_highest_verified_header {
-            if header.difficulty == alloy_primitives::U256::from(2) {
-                return false;
-            }
-            if header.parent_hash == highest_verified_header.parent_hash() {
-                return true;
-            }
-        };
-        false
-    }
-
-    fn delay_for_ramanujan_fork(
-        &self,
-        snapshot: &Snapshot,
-        header: &Header,
-    ) -> Duration {
+    fn delay_for_ramanujan_fork(&self, snapshot: &Snapshot, header: &Header) -> Duration {
         let now_secs = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
 
         let mut delay = Duration::from_secs(header.timestamp().saturating_sub(now_secs));
@@ -201,10 +148,7 @@ where
         delay
     }
 
-    fn assemble_vote_attestation_stub(
-        &self,
-        header: &mut Header,
-    ) -> Result<(), ConsensusError> {
+    fn assemble_vote_attestation_stub(&self, header: &mut Header) -> Result<(), ConsensusError> {
         if !self.chain_spec.is_luban_active_at_block(header.number()) || header.number() < 2 {
             return Ok(());
         }
@@ -226,10 +170,7 @@ where
         let votes: Vec<VoteEnvelope> = Vec::new();
 
         let (justified_block_number, justified_block_hash) =
-            match self.get_justified_number_and_hash(&parent) {
-                Ok((a, b)) => (a, b),
-                Err(err) => return Err(err),
-            };
+            self.get_justified_number_and_hash(&parent).map_err(|e| e)?;
 
         let mut attestation = VoteAttestation::new_with_vote_data(VoteData {
             source_hash: justified_block_hash,
@@ -317,6 +258,6 @@ where
     }
 }
 
-fn default_sign_fn(_: Address, _: &str, _: &[u8]) -> Result<[u8; 65], ConsensusError> {
+pub fn default_sign_fn(_: Address, _: &str, _: &[u8]) -> Result<[u8; 65], ConsensusError> {
     Err(ConsensusError::Other("sign_fn not set".into()))
 }
