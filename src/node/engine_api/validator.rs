@@ -18,7 +18,7 @@ use reth_primitives_traits::Block as _;
 use reth_trie_common::HashedPostState;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
-
+use crate::consensus::parlia::seal::SealBlock;
 use super::payload::BscPayloadTypes;
 
 #[derive(Debug, Default, Clone)]
@@ -110,20 +110,21 @@ impl PayloadValidator<BscPayloadTypes> for BscEngineValidator {
 
 /// Execution payload validator.
 #[derive(Clone, Debug)]
-pub struct BscExecutionPayloadValidator<ChainSpec> {
+pub struct BscExecutionPayloadValidator<SnapshotP, ChainSpec, Provider> {
     /// Chain spec to validate against.
     #[allow(unused)]
-    inner: Arc<ChainSpec>,
+    // inner: Arc<ChainSpec>,
+    seal_block: SealBlock<SnapshotP, ChainSpec, Provider>,
 }
 
-impl<ChainSpec> BscExecutionPayloadValidator<ChainSpec>
+impl<SnapshotP, ChainSpec, Provider> BscExecutionPayloadValidator<SnapshotP, ChainSpec, Provider>
 where
     ChainSpec: BscHardforks,
 {
     pub fn ensure_well_formed_payload(
         &self,
         payload: BscExecutionData,
-    ) -> Result<SealedBlock<BscBlock>, PayloadError> {
+    ) -> Result<SealedBlock<BscBlock>, NewPayloadError> {
         let block = payload.0;
 
         let expected_hash = block.header.hash_slow();
