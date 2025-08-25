@@ -23,7 +23,7 @@ use reth_db::transaction::{DbTx, DbTxMut};
 use reth_db::cursor::DbCursorRO;
 use schnellru::{ByLength, LruMap};
 
-pub trait SnapshotProvider: Send + Sync + std::fmt::Debug {
+pub trait SnapshotProvider: Send + Sync {
     /// Returns the snapshot that is valid for the given `block_number` (usually parent block).
     fn snapshot(&self, block_number: u64) -> Option<Snapshot>;
 
@@ -337,29 +337,5 @@ impl<DB: Database + 'static> SnapshotProvider for EnhancedDbSnapshotProvider<DB>
         let header = crate::node::evm::util::HEADER_CACHE_READER.lock().unwrap().get_header_by_hash(block_hash);
         tracing::info!("Succeed to fetch header, is_none: {} for block {} in enhanced snapshot provider", header.is_none(), block_hash);
         header
-    }
-}
-
-// Provide SnapshotProvider implementation for Arc-wrapped providers so that
-// `Arc<dyn SnapshotProvider>` can be used where a generic `P: SnapshotProvider` is
-// expected.
-impl<T> SnapshotProvider for std::sync::Arc<T>
-where
-    T: SnapshotProvider + ?Sized,
-{
-    fn snapshot(&self, block_number: u64) -> Option<Snapshot> {
-        (**self).snapshot(block_number)
-    }
-
-    fn insert(&self, snapshot: Snapshot) {
-        (**self).insert(snapshot)
-    }
-
-    fn get_header(&self, block_number: u64) -> Option<alloy_consensus::Header> {
-        (**self).get_header(block_number)
-    }
-
-    fn get_header_by_hash(&self, hash: &alloy_primitives::B256) -> Option<alloy_consensus::Header> {
-        (**self).get_header_by_hash(hash)
     }
 }

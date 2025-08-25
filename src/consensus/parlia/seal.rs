@@ -22,7 +22,6 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 type SignFnPtr = fn(Address, &str, &[u8]) -> Result<[u8; 65], ConsensusError>;
 
-#[derive(Clone, Debug)]
 pub struct SealBlock<ChainSpec> {
     snapshot_provider: Arc<dyn SnapshotProvider + Send + Sync>,
     chain_spec: Arc<ChainSpec>,
