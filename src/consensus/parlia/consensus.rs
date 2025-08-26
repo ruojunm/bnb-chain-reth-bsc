@@ -104,8 +104,8 @@ where ChainSpec: EthChainSpec + BscHardforks + 'static,
     }
 
     /// Get turn length from header
-    pub fn get_turn_length_from_header(&self, header: &Header) -> Result<Option<u8>, ParliaConsensusError> {
-        if header.number % self.get_epoch_length(header) != 0 ||
+    pub fn get_turn_length_from_header(&self, header: &Header, epoch_length: u64) -> Result<Option<u8>, ParliaConsensusError> {
+        if header.number % epoch_length != 0 ||
             !self.spec.is_bohr_active_at_timestamp(header.timestamp)
         {
             return Ok(None);

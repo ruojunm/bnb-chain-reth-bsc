@@ -158,13 +158,13 @@ where
         header: Option<Header>
     ) -> Result<(), BlockExecutionError> {
         let header_ref = header.as_ref().unwrap();
-        let epoch_length = self.parlia.get_epoch_length(header_ref);
+        let epoch_length = self.inner_ctx.snap.as_ref().unwrap().epoch_num;
         if header_ref.number % epoch_length != 0 || !self.spec.is_bohr_active_at_timestamp(header_ref.timestamp) {
             tracing::debug!("Skip verify turn length, block_number {} is not an epoch boundary, epoch_length: {}", header_ref.number, epoch_length);
             return Ok(());
         }
         let turn_length_from_header = {
-            match self.parlia.get_turn_length_from_header(header_ref) {
+            match self.parlia.get_turn_length_from_header(header_ref, epoch_length) {
                 Ok(Some(length)) => length,
                 Ok(None) => return Ok(()),
                 Err(err) => return Err(BscBlockExecutionError::ParliaConsensusInnerError { error: Box::new(err) }.into()),

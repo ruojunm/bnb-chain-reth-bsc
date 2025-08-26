@@ -270,13 +270,13 @@ impl<DB: Database + 'static> SnapshotProvider for EnhancedDbSnapshotProvider<DB>
                     
                     if let Some(checkpoint_header) = checkpoint_header {
                         let parsed = self.parlia.parse_validators_from_header(checkpoint_header);
-                        turn_length = self.parlia.get_turn_length_from_header(checkpoint_header).ok()?;
+                        turn_length = self.parlia.get_turn_length_from_header(checkpoint_header, working_snapshot.epoch_num).ok()?;
                         parsed
                     } else {
                         match crate::node::evm::util::HEADER_CACHE_READER.lock().unwrap().get_header_by_number(checkpoint_block_number) {
                             Some(header_ref) => {
                                 let parsed = self.parlia.parse_validators_from_header(&header_ref);
-                                turn_length = self.parlia.get_turn_length_from_header(&header_ref).ok()?; 
+                                turn_length = self.parlia.get_turn_length_from_header(&header_ref, working_snapshot.epoch_num).ok()?; 
                                 parsed
                             },
                             None => {
