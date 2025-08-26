@@ -162,7 +162,7 @@ where ChainSpec: EthChainSpec + BscHardforks + 'static,
 
         Ok(Some(
             Decodable::decode(&mut raw_attestation_data)
-                .map_err(|_| ParliaConsensusError::ABIDecodeInnerError)?,
+                .map_err(|_| ParliaConsensusError::ExtraInvalidAttestation)?,
         ))
     }
 
