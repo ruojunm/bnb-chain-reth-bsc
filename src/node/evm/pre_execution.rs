@@ -291,6 +291,7 @@ where
         let parlia = Parlia::new(Arc::new(self.spec.clone()), 200);
         let attestation =
             parlia.get_vote_attestation_from_header(header).map_err(|err| {
+                tracing::error!("Failed to get vote attestation from header, block_number: {}, error: {:?}", header.number(), err);
                 BscBlockExecutionError::ParliaConsensusInnerError { error: err.into() }
             })?;
         if let Some(attestation) = attestation {
@@ -404,6 +405,7 @@ where
     ) -> Result<(), BlockExecutionError> {
         let parlia = Parlia::new(Arc::new(self.spec.clone()), 200);
         let proposer = parlia.recover_proposer(header).map_err(|err| {
+            tracing::error!("Failed to recover proposer from header, block_number: {}, error: {:?}", header.number(), err);
             BscBlockExecutionError::ParliaConsensusInnerError { error: err.into() }
         })?;
 
