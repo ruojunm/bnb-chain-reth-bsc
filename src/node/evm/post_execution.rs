@@ -14,7 +14,7 @@ use revm::{context::{BlockEnv, TxEnv}, Database as RevmDatabase, DatabaseCommit}
 use alloy_consensus::{Header, TxReceipt, Transaction as AlloyTransaction, SignableTransaction};
 use alloy_primitives::{Address, hex, TxKind, U256};
 use std::collections::HashMap;
-use tracing::{debug, warn};
+use tracing::warn;
 use reth_primitives_traits::GotExpected;
 use bit_set::BitSet;
 
@@ -96,6 +96,12 @@ where
             return Err(BscBlockExecutionError::UnexpectedSystemTx.into());
         }
 
+        let epoch_length = self.parlia.get_epoch_length(&header);
+        if (header.number + 1)% epoch_length == 0 {
+            // cache it on pre block.
+            self.get_current_validators(header.number)?;
+        }
+
         tracing::debug!("Succeed to finalize new block, block_number: {}", block.number);
         Ok(())
     }
@@ -106,7 +112,7 @@ where
         header: Option<Header>
     ) -> Result<(), BlockExecutionError> {
         let header_ref = header.as_ref().unwrap();
-        let epoch_length = self.parlia.get_epoch_length(header_ref);
+        let epoch_length = self.inner_ctx.snap.as_ref().unwrap().epoch_num;
         if header_ref.number % epoch_length != 0 {
             tracing::debug!("Skip verify validator, block_number {} is not an epoch boundary, epoch_length: {}", header_ref.number, epoch_length);
             return Ok(());
@@ -136,18 +142,11 @@ where
             })
             .collect();
 
-        let expected = self.parlia.get_validator_bytes_from_header(header_ref).unwrap();
+        let expected = self.parlia.get_validator_bytes_from_header(header_ref, epoch_length).unwrap();
         if !validator_bytes.as_slice().eq(expected.as_slice()) {
-            if header_ref.number == 19249200 || header_ref.number == 34815800 || 
-            header_ref.number == 34816000 || header_ref.number == 34844000 || 
-            header_ref.number == 41835600 || header_ref.number == 41893200 || 
-            header_ref.number == 43132600 {
-                // TODO: fix this later, maybe need parent evm/block_executor etc.
-                // drive into it.
-                return Ok(());
-            }
-            debug!("validator bytes: {:?}", hex::encode(validator_bytes));
-            debug!("expected: {:?}", hex::encode(expected));
+            // TODO: recheck it, maybe still has bugs.
+            warn!("validator bytes: {:?}", hex::encode(validator_bytes));
+            warn!("expected: {:?}", hex::encode(expected));
             return Err(BlockExecutionError::msg("Invalid validators"));
         }
         tracing::debug!("Succeed to verify validators, block_number: {}, epoch_length: {}", header_ref.number, epoch_length);
@@ -160,13 +159,13 @@ where
         header: Option<Header>
     ) -> Result<(), BlockExecutionError> {
         let header_ref = header.as_ref().unwrap();
-        let epoch_length = self.parlia.get_epoch_length(header_ref);
+        let epoch_length = self.inner_ctx.snap.as_ref().unwrap().epoch_num;
         if header_ref.number % epoch_length != 0 || !self.spec.is_bohr_active_at_timestamp(header_ref.timestamp) {
             tracing::debug!("Skip verify turn length, block_number {} is not an epoch boundary, epoch_length: {}", header_ref.number, epoch_length);
             return Ok(());
         }
         let turn_length_from_header = {
-            match self.parlia.get_turn_length_from_header(header_ref) {
+            match self.parlia.get_turn_length_from_header(header_ref, epoch_length) {
                 Ok(Some(length)) => length,
                 Ok(None) => return Ok(()),
                 Err(err) => return Err(BscBlockExecutionError::ParliaConsensusInnerError { error: Box::new(err) }.into()),
@@ -358,11 +357,20 @@ where
         let end = header.number;
         let mut target_number = header.number - 1;
         for _ in (start..end).rev() {
-            let header = self.snapshot_provider.as_ref().unwrap().get_header(target_number)
+            let header = self.snapshot_provider.
+                as_ref().
+                unwrap().
+                get_header(target_number)
                 .ok_or_else(|| BlockExecutionError::msg(format!("Header not found for block number: {}", target_number)))?;
+            let snap = self.snapshot_provider.
+                as_ref().
+                unwrap().
+                snapshot(target_number).
+                ok_or(BlockExecutionError::msg("Failed to get snapshot from snapshot provider"))?;
 
             if let Some(attestation) =
-                self.parlia.get_vote_attestation_from_header(&header).map_err(|err| {
+                self.parlia.get_vote_attestation_from_header(&header, snap.epoch_num).map_err(|err| {
+                    tracing::error!("Failed to distribute finality reward due to can not get vote attestation from header, block_number: {}, error: {:?}", header.number, err);
                     BscBlockExecutionError::ParliaConsensusInnerError { error: err.into() }
                 })?
             {

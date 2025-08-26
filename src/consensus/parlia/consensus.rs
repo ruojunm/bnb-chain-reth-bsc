@@ -63,14 +63,14 @@ where ChainSpec: EthChainSpec + BscHardforks + 'static,
     }
 
     /// Get validator bytes from header extra data
-    pub fn get_validator_bytes_from_header(&self, header: &Header) -> Option<Vec<u8>> {
+    pub fn get_validator_bytes_from_header(&self, header: &Header, epoch_length: u64) -> Option<Vec<u8>> {
         let extra_len = header.extra_data.len();
         if extra_len <= EXTRA_VANITY_LEN + EXTRA_SEAL_LEN {
             return None;
         }
 
         let is_luban_active = self.spec.is_luban_active_at_block(header.number);
-        let is_epoch = header.number % self.get_epoch_length(header) == 0;
+        let is_epoch = header.number % epoch_length == 0;
 
         if is_luban_active {
             if !is_epoch {
@@ -104,8 +104,8 @@ where ChainSpec: EthChainSpec + BscHardforks + 'static,
     }
 
     /// Get turn length from header
-    pub fn get_turn_length_from_header(&self, header: &Header) -> Result<Option<u8>, ParliaConsensusError> {
-        if header.number % self.get_epoch_length(header) != 0 ||
+    pub fn get_turn_length_from_header(&self, header: &Header, epoch_length: u64) -> Result<Option<u8>, ParliaConsensusError> {
+        if header.number % epoch_length != 0 ||
             !self.spec.is_bohr_active_at_timestamp(header.timestamp)
         {
             return Ok(None);
@@ -129,7 +129,7 @@ where ChainSpec: EthChainSpec + BscHardforks + 'static,
     }
 
     /// Get vote attestation from header
-    pub fn get_vote_attestation_from_header(&self, header: &Header) -> Result<Option<VoteAttestation>, ParliaConsensusError> {
+    pub fn get_vote_attestation_from_header(&self, header: &Header, epoch_length: u64) -> Result<Option<VoteAttestation>, ParliaConsensusError> {
         let extra_len = header.extra_data.len();
         if extra_len <= EXTRA_VANITY_LEN + EXTRA_SEAL_LEN {
             return Ok(None);
@@ -139,7 +139,7 @@ where ChainSpec: EthChainSpec + BscHardforks + 'static,
             return Ok(None);
         }
 
-        let mut raw_attestation_data = if header.number() % self.get_epoch_length(header) != 0 {
+        let mut raw_attestation_data = if header.number() % epoch_length != 0 {
             &header.extra_data[EXTRA_VANITY_LEN..extra_len - EXTRA_SEAL_LEN]
         } else {
             let validator_count =
@@ -159,10 +159,12 @@ where ChainSpec: EthChainSpec + BscHardforks + 'static,
         if raw_attestation_data.is_empty() {
             return Ok(None);
         }
+        tracing::debug!("try debug attestation data, attestation_data_len: {:?}, header_number: {:?}", 
+            raw_attestation_data.len(), header.number());
 
         Ok(Some(
             Decodable::decode(&mut raw_attestation_data)
-                .map_err(|_| ParliaConsensusError::ABIDecodeInnerError)?,
+                .map_err(|_| ParliaConsensusError::ExtraInvalidAttestation)?,
         ))
     }
 
@@ -287,8 +289,9 @@ where ChainSpec: EthChainSpec + BscHardforks + 'static,
     pub fn parse_validators_from_header(
         &self,
         header: &Header,
+        epoch_length: u64,
     ) -> Result<ValidatorsInfo, ParliaConsensusError> {
-        let val_bytes = self.get_validator_bytes_from_header(header).ok_or_else(|| {
+        let val_bytes = self.get_validator_bytes_from_header(header, epoch_length).ok_or_else(|| {
             ParliaConsensusError::InvalidHeaderExtraLen {
                 header_extra_len: header.extra_data.len() as u64,
             }
