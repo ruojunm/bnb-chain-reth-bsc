@@ -356,11 +356,20 @@ where
         let end = header.number;
         let mut target_number = header.number - 1;
         for _ in (start..end).rev() {
-            let header = self.snapshot_provider.as_ref().unwrap().get_header(target_number)
+            let header = self.snapshot_provider.
+                as_ref().
+                unwrap().
+                get_header(target_number)
                 .ok_or_else(|| BlockExecutionError::msg(format!("Header not found for block number: {}", target_number)))?;
+            let snap = self.snapshot_provider.
+                as_ref().
+                unwrap().
+                snapshot(target_number).
+                ok_or(BlockExecutionError::msg("Failed to get snapshot from snapshot provider"))?;
 
             if let Some(attestation) =
-                self.parlia.get_vote_attestation_from_header(&header, self.inner_ctx.snap.as_ref().unwrap().epoch_num).map_err(|err| {
+                self.parlia.get_vote_attestation_from_header(&header, snap.epoch_num).map_err(|err| {
+                    tracing::error!("Failed to distribute finality reward due to can not get vote attestation from header, block_number: {}, error: {:?}", header.number, err);
                     BscBlockExecutionError::ParliaConsensusInnerError { error: err.into() }
                 })?
             {
