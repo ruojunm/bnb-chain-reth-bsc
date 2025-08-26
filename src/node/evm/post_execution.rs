@@ -112,7 +112,7 @@ where
         header: Option<Header>
     ) -> Result<(), BlockExecutionError> {
         let header_ref = header.as_ref().unwrap();
-        let epoch_length = self.parlia.get_epoch_length(header_ref);
+        let epoch_length = self.inner_ctx.snap.as_ref().unwrap().epoch_num;
         if header_ref.number % epoch_length != 0 {
             tracing::debug!("Skip verify validator, block_number {} is not an epoch boundary, epoch_length: {}", header_ref.number, epoch_length);
             return Ok(());
@@ -142,7 +142,7 @@ where
             })
             .collect();
 
-        let expected = self.parlia.get_validator_bytes_from_header(header_ref).unwrap();
+        let expected = self.parlia.get_validator_bytes_from_header(header_ref, epoch_length).unwrap();
         if !validator_bytes.as_slice().eq(expected.as_slice()) {
             warn!("validator bytes: {:?}", hex::encode(validator_bytes));
             warn!("expected: {:?}", hex::encode(expected));

@@ -63,14 +63,14 @@ where ChainSpec: EthChainSpec + BscHardforks + 'static,
     }
 
     /// Get validator bytes from header extra data
-    pub fn get_validator_bytes_from_header(&self, header: &Header) -> Option<Vec<u8>> {
+    pub fn get_validator_bytes_from_header(&self, header: &Header, epoch_length: u64) -> Option<Vec<u8>> {
         let extra_len = header.extra_data.len();
         if extra_len <= EXTRA_VANITY_LEN + EXTRA_SEAL_LEN {
             return None;
         }
 
         let is_luban_active = self.spec.is_luban_active_at_block(header.number);
-        let is_epoch = header.number % self.get_epoch_length(header) == 0;
+        let is_epoch = header.number % epoch_length == 0;
 
         if is_luban_active {
             if !is_epoch {
@@ -291,8 +291,9 @@ where ChainSpec: EthChainSpec + BscHardforks + 'static,
     pub fn parse_validators_from_header(
         &self,
         header: &Header,
+        epoch_length: u64,
     ) -> Result<ValidatorsInfo, ParliaConsensusError> {
-        let val_bytes = self.get_validator_bytes_from_header(header).ok_or_else(|| {
+        let val_bytes = self.get_validator_bytes_from_header(header, epoch_length).ok_or_else(|| {
             ParliaConsensusError::InvalidHeaderExtraLen {
                 header_extra_len: header.extra_data.len() as u64,
             }

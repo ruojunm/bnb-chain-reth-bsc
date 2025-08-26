@@ -229,7 +229,7 @@ impl<DB: Database + 'static> SnapshotProvider for EnhancedDbSnapshotProvider<DB>
             if let Some(header) = crate::node::evm::util::HEADER_CACHE_READER.lock().unwrap().get_header_by_number(current_block) {
                     if header.number == 0 {
                         let ValidatorsInfo { consensus_addrs, vote_addrs } =
-                            self.parlia.parse_validators_from_header(&header).map_err(|err| {
+                            self.parlia.parse_validators_from_header(&header, self.parlia.epoch).map_err(|err| {
                                 BscBlockExecutionError::ParliaConsensusInnerError { error: err.into() }
                             }).ok()?;
                         let genesis_snap = Snapshot::new(
@@ -269,7 +269,7 @@ impl<DB: Database + 'static> SnapshotProvider for EnhancedDbSnapshotProvider<DB>
                         .find(|h| h.number == checkpoint_block_number);
                     
                     if let Some(checkpoint_header) = checkpoint_header {
-                        let parsed = self.parlia.parse_validators_from_header(checkpoint_header);
+                        let parsed = self.parlia.parse_validators_from_header(checkpoint_header, working_snapshot.epoch_num);
                         turn_length = self.parlia.get_turn_length_from_header(checkpoint_header, working_snapshot.epoch_num).map_err(|err| {
                             tracing::error!("Failed to get turn length from checkpoint header, block_number: {}, checkpoint_block_number: {}, epoch_num: {}, error: {:?}", 
                                 header.number, checkpoint_block_number, working_snapshot.epoch_num, err);
@@ -279,7 +279,7 @@ impl<DB: Database + 'static> SnapshotProvider for EnhancedDbSnapshotProvider<DB>
                     } else {
                         match crate::node::evm::util::HEADER_CACHE_READER.lock().unwrap().get_header_by_number(checkpoint_block_number) {
                             Some(header_ref) => {
-                                let parsed = self.parlia.parse_validators_from_header(&header_ref);
+                                let parsed = self.parlia.parse_validators_from_header(&header_ref, working_snapshot.epoch_num);
                                 turn_length = self.parlia.get_turn_length_from_header(&header_ref, working_snapshot.epoch_num).map_err(|err| {
                                     tracing::error!("Failed to get turn length from cached header, block_number: {}, checkpoint_block_number: {}, epoch_num: {}, error: {:?}", 
                                         header.number, checkpoint_block_number, working_snapshot.epoch_num, err);
