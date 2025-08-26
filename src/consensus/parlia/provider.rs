@@ -294,7 +294,11 @@ impl<DB: Database + 'static> SnapshotProvider for EnhancedDbSnapshotProvider<DB>
 
                 let new_validators = validators_info.consensus_addrs;
                 let vote_addrs = validators_info.vote_addrs;
-                let attestation = self.parlia.get_vote_attestation_from_header(header, working_snapshot.epoch_num).ok()?;
+                let attestation = self.parlia.get_vote_attestation_from_header(header, working_snapshot.epoch_num).map_err(|err| {
+                    tracing::error!("Failed to get vote attestation from header, block_number: {}, epoch_num: {}, error: {:?}", 
+                        header.number, working_snapshot.epoch_num, err);
+                    err
+                }).ok()?;
 
                 tracing::debug!("Start to apply header to snapshot, block_number: {:?}, turn_length: {:?}", header.number, turn_length);
                 // Apply header to snapshot (now determines hardfork activation internally)
