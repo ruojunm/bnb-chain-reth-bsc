@@ -360,7 +360,7 @@ where
                 .ok_or_else(|| BlockExecutionError::msg(format!("Header not found for block number: {}", target_number)))?;
 
             if let Some(attestation) =
-                self.parlia.get_vote_attestation_from_header(&header).map_err(|err| {
+                self.parlia.get_vote_attestation_from_header(&header, self.inner_ctx.snap.as_ref().unwrap().epoch_num).map_err(|err| {
                     BscBlockExecutionError::ParliaConsensusInnerError { error: err.into() }
                 })?
             {

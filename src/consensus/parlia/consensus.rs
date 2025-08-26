@@ -129,7 +129,7 @@ where ChainSpec: EthChainSpec + BscHardforks + 'static,
     }
 
     /// Get vote attestation from header
-    pub fn get_vote_attestation_from_header(&self, header: &Header) -> Result<Option<VoteAttestation>, ParliaConsensusError> {
+    pub fn get_vote_attestation_from_header(&self, header: &Header, epoch_length: u64) -> Result<Option<VoteAttestation>, ParliaConsensusError> {
         let extra_len = header.extra_data.len();
         if extra_len <= EXTRA_VANITY_LEN + EXTRA_SEAL_LEN {
             return Ok(None);
@@ -139,7 +139,7 @@ where ChainSpec: EthChainSpec + BscHardforks + 'static,
             return Ok(None);
         }
 
-        let mut raw_attestation_data = if header.number() % self.get_epoch_length(header) != 0 {
+        let mut raw_attestation_data = if header.number() % epoch_length != 0 {
             tracing::debug!("header.number {} not an epoch", header.number());
             &header.extra_data[EXTRA_VANITY_LEN..extra_len - EXTRA_SEAL_LEN]
         } else {
