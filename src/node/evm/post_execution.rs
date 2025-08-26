@@ -144,6 +144,7 @@ where
 
         let expected = self.parlia.get_validator_bytes_from_header(header_ref, epoch_length).unwrap();
         if !validator_bytes.as_slice().eq(expected.as_slice()) {
+            // TODO: recheck it, maybe still has bugs.
             warn!("validator bytes: {:?}", hex::encode(validator_bytes));
             warn!("expected: {:?}", hex::encode(expected));
             return Err(BlockExecutionError::msg("Invalid validators"));

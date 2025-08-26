@@ -140,10 +140,8 @@ where ChainSpec: EthChainSpec + BscHardforks + 'static,
         }
 
         let mut raw_attestation_data = if header.number() % epoch_length != 0 {
-            tracing::debug!("header.number {} not an epoch", header.number());
             &header.extra_data[EXTRA_VANITY_LEN..extra_len - EXTRA_SEAL_LEN]
         } else {
-            tracing::debug!("header.number {} is an epoch", header.number());
             let validator_count =
                 header.extra_data[EXTRA_VANITY_LEN + VALIDATOR_NUMBER_SIZE - 1] as usize;
             let mut start =
