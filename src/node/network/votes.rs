@@ -75,11 +75,9 @@ struct VotesWrapper(Vec<VoteEnvelope>);
 
 impl Encodable for VotesPacket {
     fn encode(&self, out: &mut dyn BufMut) {
-        // Message ID is a raw byte
+        // Message ID is a raw byte followed by bare []VoteEnvelope
         out.put_u8(BscProtoMessageId::Votes as u8);
-        // Encode as wrapper: [votes]
-        let wrapped = VotesWrapper(self.0.clone());
-        wrapped.encode(out);
+        self.0.encode(out);
     }
 }
 
@@ -95,18 +93,21 @@ impl Decodable for VotesPacket {
             return Err(alloy_rlp::Error::Custom("Invalid message ID for VotesPacket"));
         }
 
-        // First, try decoding as the Go-style wrapper: struct{Votes []*VoteEnvelope}
+        // First, try the bare []VoteEnvelope encoding (what we emit)
+        let mut inner = *buf;
+        if let Ok(votes) = Vec::<VoteEnvelope>::decode(&mut inner) {
+            *buf = inner;
+            return Ok(Self(votes));
+        }
+
+        // Fallback: accept Go-style wrapper: struct{Votes []*VoteEnvelope}
         let mut inner = *buf;
         if let Ok(VotesWrapper(votes)) = VotesWrapper::decode(&mut inner) {
             *buf = inner;
             return Ok(Self(votes));
         }
 
-        // Fallback: accept bare []VoteEnvelope for robustness
-        let mut inner = *buf;
-        let votes = Vec::<VoteEnvelope>::decode(&mut inner)?;
-        *buf = inner;
-        Ok(Self(votes))
+        Err(alloy_rlp::Error::Custom("Invalid votes payload"))
     }
 }
 
