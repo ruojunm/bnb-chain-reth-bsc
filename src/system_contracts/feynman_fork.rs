@@ -209,9 +209,9 @@ mod tests {
             let eligible_validators =
                 get_top_validators_by_voting_power(validators, U256::from(k)).validators;
 
-            assert_eq!(eligible_validators.len(), expected.len(), "case: {}", description);
+            assert_eq!(eligible_validators.len(), expected.len(), "case: {description}");
             for i in 0..expected.len() {
-                assert_eq!(eligible_validators[i], expected[i], "case: {}", description);
+                assert_eq!(eligible_validators[i], expected[i], "case: {description}");
             }
         }
     }

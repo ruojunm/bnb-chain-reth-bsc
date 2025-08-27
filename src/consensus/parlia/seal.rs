@@ -197,7 +197,7 @@ where
             .iter()
             .map(|raw| {
                 blsSignature::from_bytes(raw.as_slice()).map_err(|e| {
-                    ConsensusError::Other(format!("BLS sig decode error: {:?}", e))
+                    ConsensusError::Other(format!("BLS sig decode error: {e:?}"))
                 })
             })
             .collect::<Result<_, _>>()?;

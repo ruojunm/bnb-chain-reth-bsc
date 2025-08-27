@@ -46,7 +46,7 @@ impl From<Snapshot> for SnapshotResult {
             .iter()
             .map(|addr| {
                 (
-                    format!("0x{:040x}", addr), // 40-char hex address
+                    format!("0x{addr:040x}"), // 40-char hex address
                     ValidatorInfo::default(),
                 )
             })
@@ -59,7 +59,7 @@ impl From<Snapshot> for SnapshotResult {
             .map(|(block_num, addr)| {
                 (
                     block_num.to_string(),
-                    format!("0x{:040x}", addr),
+                    format!("0x{addr:040x}"),
                 )
             })
             .collect();

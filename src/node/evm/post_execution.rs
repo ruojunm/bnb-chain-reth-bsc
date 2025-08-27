@@ -361,7 +361,7 @@ where
                 as_ref().
                 unwrap().
                 get_header(target_number)
-                .ok_or_else(|| BlockExecutionError::msg(format!("Header not found for block number: {}", target_number)))?;
+                .ok_or_else(|| BlockExecutionError::msg(format!("Header not found for block number: {target_number}")))?;
             let snap = self.snapshot_provider.
                 as_ref().
                 unwrap().
