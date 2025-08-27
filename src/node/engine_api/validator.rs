@@ -4,7 +4,7 @@ use super::payload::BscPayloadTypes;
 use crate::{chainspec::BscChainSpec, hardforks::BscHardforks, BscBlock, BscPrimitives};
 use alloy_consensus::BlockHeader;
 use alloy_eips::eip4895::Withdrawal;
-use alloy_primitives::{Address, B256};
+use alloy_primitives::{B256};
 use alloy_rpc_types_engine::PayloadError;
 use reth::{
     api::{FullNodeComponents, NodeTypes},
@@ -14,7 +14,6 @@ use reth::{
     },
     consensus::ConsensusError,
 };
-use reth_chainspec::EthChainSpec;
 use reth_engine_primitives::{ExecutionPayload, PayloadValidator};
 use reth_payload_primitives::NewPayloadError;
 use reth_primitives::{RecoveredBlock, SealedBlock};

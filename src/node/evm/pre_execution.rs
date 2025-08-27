@@ -28,7 +28,9 @@ use bit_set::BitSet;
 
 const BLST_DST: &[u8] = b"BLS_SIG_BLS12381G2_XMD:SHA-256_SSWU_RO_POP_";
 
-static VALIDATOR_CACHE: LazyLock<Mutex<LruMap<u64, (Vec<Address>, Vec<VoteAddress>), ByLength>>> = LazyLock::new(|| {
+type ValidatorCache = LruMap<u64, (Vec<Address>, Vec<VoteAddress>), ByLength>;
+
+static VALIDATOR_CACHE: LazyLock<Mutex<ValidatorCache>> = LazyLock::new(|| {
     Mutex::new(LruMap::new(ByLength::new(1024)))
 });
 
@@ -232,7 +234,7 @@ where
             is_system_transaction: false,
         };
 
-        let result_and_state = self.evm.transact(tx_env).map_err(|err| BlockExecutionError::other(err))?;
+        let result_and_state = self.evm.transact(tx_env).map_err(BlockExecutionError::other)?;
         if !result_and_state.result.is_success() {
             tracing::error!("Failed to eth call, to: {:?}, data: {:?}", to, data);
             return Err(BlockExecutionError::msg("ETH call failed"));
@@ -364,7 +366,7 @@ where
             }
 
             // check if voted validator count satisfied 2/3 + 1
-            let at_least_votes = (validators_count * 2 + 2) / 3; // ceil division
+            let at_least_votes = (validators_count * 2).div_ceil(3); // ceil division
             if vote_addrs.len() < at_least_votes {
                 return Err(BscBlockExecutionError::InvalidAttestationVoteCount(GotExpected {
                     got: vote_addrs.len() as u64,

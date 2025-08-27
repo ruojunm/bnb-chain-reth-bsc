@@ -74,14 +74,13 @@ where
             .ok_or_else(|| ConsensusError::Other("Snapshot not found".into()))?;
 
         if !snap.validators.contains(&val) {
-            return Err(ConsensusError::Other(format!("Unauthorized validator: {val}").into()));
+            return Err(ConsensusError::Other(format!("Unauthorized validator: {val}")));
         }
 
         if snap.sign_recently(val) {
             tracing::info!("Signed recently, must wait for others");
             return Err(ConsensusError::Other(
-                format!("Signed recently, must wait for others, validator: {val}").into(),
-            ));
+                format!("Signed recently, must wait for others, validator: {val}")));
         }
 
         let delay = self.delay_for_ramanujan_fork(&snap, header);
@@ -167,7 +166,7 @@ where
         let votes: Vec<VoteEnvelope> = Vec::new();
 
         let (justified_block_number, justified_block_hash) =
-            self.get_justified_number_and_hash(&parent).map_err(|e| e)?;
+            self.get_justified_number_and_hash(&parent)?;
 
         let mut attestation = VoteAttestation::new_with_vote_data(VoteData {
             source_hash: justified_block_hash,
@@ -182,9 +181,7 @@ where
                     format!(
                         "vote check error, expected: {:?}, real: {:?}",
                         attestation.data, vote.data,
-                    )
-                    .into(),
-                ));
+                    )));
             }
         }
 
@@ -200,7 +197,7 @@ where
             .iter()
             .map(|raw| {
                 blsSignature::from_bytes(raw.as_slice()).map_err(|e| {
-                    ConsensusError::Other(format!("BLS sig decode error: {:?}", e).into())
+                    ConsensusError::Other(format!("BLS sig decode error: {e:?}"))
                 })
             })
             .collect::<Result<_, _>>()?;
@@ -259,7 +256,7 @@ pub fn default_sign_fn(_addr: Address, _: &str, data: &[u8]) -> Result<Vec<u8>, 
     let hash = keccak256(data);
     let private_key = &[0u8; 40]; // TODO get private key by addr
     let signing_key = SigningKey::from_slice(private_key)
-        .map_err(|e| ConsensusError::Other(format!("invalid private key, e:{e}").into()))?;
+        .map_err(|e| ConsensusError::Other(format!("invalid private key, e:{e}")))?;
     let sig_result: Signature = signing_key.sign(hash.as_slice());
     Ok(sig_result.to_bytes().to_vec())
 }

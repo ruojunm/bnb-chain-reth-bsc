@@ -35,7 +35,7 @@ where
     async fn build_consensus(self, ctx: &BuilderContext<Node>) -> eyre::Result<Self::Consensus> {
         let snapshot_provider = create_snapshot_provider(ctx)
             .unwrap_or_else(|e| {
-                panic!("Failed to initialize snapshot provider, due to {}", e);
+                panic!("Failed to initialize snapshot provider, due to {e}");
             });
         
         crate::shared::set_snapshot_provider(
@@ -43,7 +43,7 @@ where
         ).unwrap_or_else(|_| panic!("Failed to set global snapshot provider"));
 
         crate::shared::set_header_provider(Arc::new(ctx.provider().clone()))
-            .unwrap_or_else(|e| panic!("Failed to set global header provider: {}", e));
+            .unwrap_or_else(|e| panic!("Failed to set global header provider: {e}"));
 
         Ok(Arc::new(BscConsensus::new(ctx.chain_spec())))
     }
