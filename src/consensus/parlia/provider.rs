@@ -198,9 +198,8 @@ impl<DB: Database + 'static> SnapshotProvider for EnhancedDbSnapshotProvider<DB>
         }
         
         // Cache miss, starting backward walking.
-        // simple backward walking + proper epoch updates.
+        // Incremental snapshot building to avoid OOM with large header collections
         let mut current_block = block_number;
-        let mut headers_to_apply = Vec::new();
         let base_snapshot = loop {
             { // fast path query.
                 let mut cache_guard = self.base.cache.write();
@@ -225,73 +224,102 @@ impl<DB: Database + 'static> SnapshotProvider for EnhancedDbSnapshotProvider<DB>
                 }
             }
 
-            // Collect header for forward application - fail if not available 
-            if let Some(header) = crate::node::evm::util::HEADER_CACHE_READER.lock().unwrap().get_header_by_number(current_block) {
-                    if header.number == 0 {
-                        let ValidatorsInfo { consensus_addrs, vote_addrs } =
-                            self.parlia.parse_validators_from_header(&header, self.parlia.epoch).map_err(|err| {
-                                BscBlockExecutionError::ParliaConsensusInnerError { error: err.into() }
-                            }).ok()?;
-                        let genesis_snap = Snapshot::new(
-                            consensus_addrs,
-                            0, // Genesis block number
-                            header.hash_slow(),
-                            self.parlia.epoch,
-                            vote_addrs,
-                        );
-                        self.base.cache.write().insert(0, genesis_snap.clone());
-                        self.base.persist_to_db(&genesis_snap).ok()?;
-                        tracing::info!("Succeed to persist genesis snapshot for block 0 to DB");
-                        break genesis_snap;
-                    }
-                    headers_to_apply.push(header.clone());
-                    current_block = current_block.saturating_sub(1);
+            // Check if we need to handle genesis
+            if current_block == 0 {
+                if let Some(header) = crate::node::evm::util::HEADER_CACHE_READER.lock().unwrap().get_header_by_number(0) {
+                    let ValidatorsInfo { consensus_addrs, vote_addrs } =
+                        self.parlia.parse_validators_from_header(&header, self.parlia.epoch).map_err(|err| {
+                            BscBlockExecutionError::ParliaConsensusInnerError { error: err.into() }
+                        }).ok()?;
+                    let genesis_snap = Snapshot::new(
+                        consensus_addrs,
+                        0, // Genesis block number
+                        header.hash_slow(),
+                        self.parlia.epoch,
+                        vote_addrs,
+                    );
+                    self.base.cache.write().insert(0, genesis_snap.clone());
+                    self.base.persist_to_db(&genesis_snap).ok()?;
+                    tracing::info!("Succeed to persist genesis snapshot for block 0 to DB");
+                    break genesis_snap;
                 } else {
-                    tracing::error!("Failed to get snap due to load header in DB for block {}", current_block);
+                    tracing::error!("Failed to get genesis header for block 0");
                     return None;
                 }
-            };
+            }
 
-            headers_to_apply.reverse();
-            let mut working_snapshot = base_snapshot;
-            tracing::debug!("Start to apply headers to base snapshot, base_snapshot: {:?}, target_snapshot: {}, apply_length: {}", 
-                working_snapshot.block_number, block_number, headers_to_apply.len());
+            current_block = current_block.saturating_sub(1);
+        };
 
-            for (_index, header) in headers_to_apply.iter().enumerate() {
+        // Incremental forward building from base_snapshot to target block
+        self.build_snapshot_incrementally(base_snapshot, block_number)
+    }
+
+    fn insert(&self, snapshot: Snapshot) {
+        self.base.insert(snapshot);
+    }
+    
+    fn get_header(&self, block_number: u64) -> Option<alloy_consensus::Header> {
+        let header = crate::node::evm::util::HEADER_CACHE_READER.lock().unwrap().get_header_by_number(block_number);
+        tracing::info!("Succeed to fetch header, is_none: {} for block {} in enhanced snapshot provider", header.is_none(), block_number);
+        header
+    }
+
+    fn get_header_by_hash(&self, block_hash: &B256) -> Option<alloy_consensus::Header> {
+        let header = crate::node::evm::util::HEADER_CACHE_READER.lock().unwrap().get_header_by_hash(block_hash);
+        tracing::info!("Succeed to fetch header by hash, is_none: {} for hash {} in enhanced snapshot provider", header.is_none(), block_hash);
+        header
+    }
+}
+
+impl<DB: Database + 'static> EnhancedDbSnapshotProvider<DB> {
+    /// Build snapshot incrementally to avoid OOM by processing headers in small chunks
+    fn build_snapshot_incrementally(&self, base_snapshot: Snapshot, target_block: u64) -> Option<Snapshot> {
+        const CHUNK_SIZE: u64 = 1024; // Process headers in chunks to avoid OOM
+        
+        let mut working_snapshot = base_snapshot;
+        let mut current_block = working_snapshot.block_number + 1;
+        
+        tracing::info!("Starting incremental snapshot build from block {} to {}", working_snapshot.block_number, target_block);
+        
+        while current_block <= target_block {
+            let chunk_end = std::cmp::min(current_block + CHUNK_SIZE - 1, target_block);
+            let mut headers_chunk = Vec::with_capacity((chunk_end - current_block + 1) as usize);
+            
+            // Collect headers for this chunk
+            for block_num in current_block..=chunk_end {
+                if let Some(header) = crate::node::evm::util::HEADER_CACHE_READER.lock().unwrap().get_header_by_number(block_num) {
+                    headers_chunk.push(header);
+                } else {
+                    tracing::error!("Failed to get header for block {} during incremental rebuild", block_num);
+                    return None;
+                }
+            }
+            
+            tracing::debug!("Processing chunk: blocks {} to {} ({} headers)", current_block, chunk_end, headers_chunk.len());
+            
+            // Apply headers in this chunk
+            for header in headers_chunk.iter() {
                 let epoch_remainder = header.number % working_snapshot.epoch_num;
                 let miner_check_len = working_snapshot.miner_history_check_len();
                 let is_epoch_boundary = header.number > 0 && epoch_remainder == miner_check_len;
                 let mut turn_length = None;
+                
                 let validators_info = if is_epoch_boundary {
                     let checkpoint_block_number = header.number - miner_check_len;
-                    tracing::debug!("Try update validator set, checkpoint_block_number: {:?}, block_number: {:?}", checkpoint_block_number, header.number);
-                    let checkpoint_header = headers_to_apply.iter()
-                        .find(|h| h.number == checkpoint_block_number);
+                    tracing::debug!("Updating validator set at epoch boundary, checkpoint_block: {}, current_block: {}", checkpoint_block_number, header.number);
                     
-                    if let Some(checkpoint_header) = checkpoint_header {
-                        let parsed = self.parlia.parse_validators_from_header(checkpoint_header, working_snapshot.epoch_num);
-                        turn_length = self.parlia.get_turn_length_from_header(checkpoint_header, working_snapshot.epoch_num).map_err(|err| {
+                    if let Some(checkpoint_header) = crate::node::evm::util::HEADER_CACHE_READER.lock().unwrap().get_header_by_number(checkpoint_block_number) {
+                        let parsed = self.parlia.parse_validators_from_header(&checkpoint_header, working_snapshot.epoch_num);
+                        turn_length = self.parlia.get_turn_length_from_header(&checkpoint_header, working_snapshot.epoch_num).map_err(|err| {
                             tracing::error!("Failed to get turn length from checkpoint header, block_number: {}, checkpoint_block_number: {}, epoch_num: {}, error: {:?}", 
                                 header.number, checkpoint_block_number, working_snapshot.epoch_num, err);
                             err
                         }).ok()?;
                         parsed
                     } else {
-                        match crate::node::evm::util::HEADER_CACHE_READER.lock().unwrap().get_header_by_number(checkpoint_block_number) {
-                            Some(header_ref) => {
-                                let parsed = self.parlia.parse_validators_from_header(&header_ref, working_snapshot.epoch_num);
-                                turn_length = self.parlia.get_turn_length_from_header(&header_ref, working_snapshot.epoch_num).map_err(|err| {
-                                    tracing::error!("Failed to get turn length from cached header, block_number: {}, checkpoint_block_number: {}, epoch_num: {}, error: {:?}", 
-                                        header.number, checkpoint_block_number, working_snapshot.epoch_num, err);
-                                    err
-                                }).ok()?; 
-                                parsed
-                            },
-                            None => {
-                                tracing::warn!("Failed to find checkpoint header for block {} - header not found", checkpoint_block_number);
-                                return None;
-                            }
-                        }
+                        tracing::error!("Failed to find checkpoint header for block {}", checkpoint_block_number);
+                        return None;
                     }
                 } else {
                     Ok(ValidatorsInfo {
@@ -308,8 +336,7 @@ impl<DB: Database + 'static> SnapshotProvider for EnhancedDbSnapshotProvider<DB>
                     err
                 }).ok()?;
 
-                tracing::debug!("Start to apply header to snapshot, block_number: {:?}, turn_length: {:?}", header.number, turn_length);
-                // Apply header to snapshot (now determines hardfork activation internally)
+                // Apply header to snapshot
                 working_snapshot = match working_snapshot.apply(
                     header.beneficiary,
                     header,
@@ -321,34 +348,63 @@ impl<DB: Database + 'static> SnapshotProvider for EnhancedDbSnapshotProvider<DB>
                 ) {
                     Some(snap) => snap,
                     None => {
-                        tracing::warn!("Failed to apply header {} to snapshot, snapshot: {:?}", header.number, working_snapshot);
+                        tracing::warn!("Failed to apply header {} to snapshot", header.number);
                         return None;
                     }
                 };
 
+                // Cache and persist snapshots at checkpoints
                 self.base.cache.write().insert(working_snapshot.block_number, working_snapshot.clone());
                 if working_snapshot.block_number % crate::consensus::parlia::snapshot::CHECKPOINT_INTERVAL == 0 {
-                    tracing::debug!("Succeed to rebuild snapshot checkpoint for block {} to DB", working_snapshot.block_number);
+                    tracing::info!("Persisting snapshot checkpoint for block {}", working_snapshot.block_number);
                     self.base.insert(working_snapshot.clone());
                 }
             }
+            
+            current_block = chunk_end + 1;
+            
+            // Log progress and memory usage every 50k blocks
+            if current_block % 50000 == 0 {
+                let mem_info = Self::get_memory_usage();
+                tracing::info!("Incremental rebuild progress: {} / {} blocks completed, Memory: RSS={}MB VSZ={}MB", 
+                    current_block - 1, target_block, mem_info.0, mem_info.1);
+                
+                // Warn if memory usage is getting high (>16GB RSS)
+                if mem_info.0 > 16384 {
+                    tracing::warn!("High memory usage detected: {}MB RSS. Consider restarting if OOM occurs.", mem_info.0);
+                }
+            }
+        }
         
+        tracing::info!("Completed incremental snapshot build to block {}", target_block);
         Some(working_snapshot)
     }
 
-    fn insert(&self, snapshot: Snapshot) {
-        self.base.insert(snapshot);
-    }
-    
-    fn get_header(&self, block_number: u64) -> Option<alloy_consensus::Header> {
-        let header = crate::node::evm::util::HEADER_CACHE_READER.lock().unwrap().get_header_by_number(block_number);
-        tracing::info!("Succeed to fetch header, is_none: {} for block {} in enhanced snapshot provider", header.is_none(), block_number);
-        header
-    }
-
-    fn get_header_by_hash(&self, block_hash: &B256) -> Option<alloy_consensus::Header> {
-        let header = crate::node::evm::util::HEADER_CACHE_READER.lock().unwrap().get_header_by_hash(block_hash);
-        tracing::info!("Succeed to fetch header, is_none: {} for block {} in enhanced snapshot provider", header.is_none(), block_hash);
-        header
+    /// Get current memory usage (RSS, VSZ) in MB
+    fn get_memory_usage() -> (u64, u64) {
+        #[cfg(target_os = "linux")]
+        {
+            if let Ok(contents) = std::fs::read_to_string("/proc/self/status") {
+                let mut rss_kb = 0;
+                let mut vsz_kb = 0;
+                
+                for line in contents.lines() {
+                    if line.starts_with("VmRSS:") {
+                        if let Some(value) = line.split_whitespace().nth(1) {
+                            rss_kb = value.parse().unwrap_or(0);
+                        }
+                    } else if line.starts_with("VmSize:") {
+                        if let Some(value) = line.split_whitespace().nth(1) {
+                            vsz_kb = value.parse().unwrap_or(0);
+                        }
+                    }
+                }
+                
+                return (rss_kb / 1024, vsz_kb / 1024); // Convert KB to MB
+            }
+        }
+        
+        // Fallback for non-Linux or if reading /proc fails
+        (0, 0)
     }
 }
