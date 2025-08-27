@@ -13,47 +13,47 @@ name = "reth-bsc"
 path = "src/main.rs"
 
 [dependencies]
-reth = { git = "https://github.com/clydemeng/reth.git", branch = "6487f0b-bsc-patch" }
-reth-cli = { git = "https://github.com/clydemeng/reth.git", branch = "6487f0b-bsc-patch" }
-reth-cli-commands = { git = "https://github.com/clydemeng/reth.git", branch = "6487f0b-bsc-patch" }
-reth-basic-payload-builder = { git = "https://github.com/clydemeng/reth.git", branch = "6487f0b-bsc-patch" }
-reth-db = { git = "https://github.com/clydemeng/reth.git", branch = "6487f0b-bsc-patch" }
-reth-engine-local = { git = "https://github.com/clydemeng/reth.git", branch = "6487f0b-bsc-patch" }
-reth-chainspec = { git = "https://github.com/clydemeng/reth.git", branch = "6487f0b-bsc-patch" }
-reth-cli-util = { git = "https://github.com/clydemeng/reth.git", branch = "6487f0b-bsc-patch" }
-reth-discv4 = { git = "https://github.com/clydemeng/reth.git", branch = "6487f0b-bsc-patch", features = ["test-utils"] }
-reth-engine-primitives = { git = "https://github.com/clydemeng/reth.git", branch = "6487f0b-bsc-patch" }
-reth-ethereum-forks = { git = "https://github.com/clydemeng/reth.git", branch = "6487f0b-bsc-patch", features = ["serde"] }
-reth-ethereum-payload-builder = { git = "https://github.com/clydemeng/reth.git", branch = "6487f0b-bsc-patch" }
-reth-ethereum-primitives = { git = "https://github.com/clydemeng/reth.git", branch = "6487f0b-bsc-patch" }
-reth-eth-wire = { git = "https://github.com/clydemeng/reth.git", branch = "6487f0b-bsc-patch" }
-reth-eth-wire-types = { git = "https://github.com/clydemeng/reth.git", branch = "6487f0b-bsc-patch" }
-reth-evm = { git = "https://github.com/clydemeng/reth.git", branch = "6487f0b-bsc-patch" }
-reth-evm-ethereum = { git = "https://github.com/clydemeng/reth.git", branch = "6487f0b-bsc-patch" }
-# reth-execution-types = { git = "https://github.com/clydemeng/reth.git", branch = "extend-8e0ff926b" }
-reth-transaction-pool = { git = "https://github.com/clydemeng/reth.git", branch = "6487f0b-bsc-patch" }
-reth-node-core = { git = "https://github.com/clydemeng/reth.git", branch = "6487f0b-bsc-patch" }
-reth-node-api = { git = "https://github.com/clydemeng/reth.git", branch = "6487f0b-bsc-patch" }
-reth-node-builder = { git = "https://github.com/clydemeng/reth.git", branch = "6487f0b-bsc-patch" }
-reth-payload-builder = { git = "https://github.com/clydemeng/reth.git", branch = "6487f0b-bsc-patch" }
-reth-revm = { git = "https://github.com/clydemeng/reth.git", branch = "6487f0b-bsc-patch" }
-reth-network = { git = "https://github.com/clydemeng/reth.git", branch = "6487f0b-bsc-patch", features = ["test-utils"] }
-reth-network-p2p = { git = "https://github.com/clydemeng/reth.git", branch = "6487f0b-bsc-patch" }
-reth-network-api = { git = "https://github.com/clydemeng/reth.git", branch = "6487f0b-bsc-patch" }
-reth-node-ethereum = { git = "https://github.com/clydemeng/reth.git", branch = "6487f0b-bsc-patch", features = ["test-utils"] }
-reth-network-peers = { git = "https://github.com/clydemeng/reth.git", branch = "6487f0b-bsc-patch" }
-reth-payload-primitives = { git = "https://github.com/clydemeng/reth.git", branch = "6487f0b-bsc-patch" }
-reth-primitives = { git = "https://github.com/clydemeng/reth.git", branch = "6487f0b-bsc-patch" }
-reth-primitives-traits = { git = "https://github.com/clydemeng/reth.git", branch = "6487f0b-bsc-patch" }
-reth-provider = { git = "https://github.com/clydemeng/reth.git", branch = "6487f0b-bsc-patch", features = ["test-utils"] }
-reth-rpc-eth-api = { git = "https://github.com/clydemeng/reth.git", branch = "6487f0b-bsc-patch" }
-reth-rpc-engine-api = { git = "https://github.com/clydemeng/reth.git", branch = "6487f0b-bsc-patch" }
-reth-rpc-api = { git = "https://github.com/clydemeng/reth.git", branch = "6487f0b-bsc-patch" }
-reth-tracing = { git = "https://github.com/clydemeng/reth.git", branch = "6487f0b-bsc-patch" }
-reth-trie-common = { git = "https://github.com/clydemeng/reth.git", branch = "6487f0b-bsc-patch" }
-reth-trie-db = { git = "https://github.com/clydemeng/reth.git", branch = "6487f0b-bsc-patch" }
-reth-rpc = { git = "https://github.com/clydemeng/reth.git", branch = "6487f0b-bsc-patch" }
-reth-optimism-rpc = { git = "https://github.com/clydemeng/reth.git", branch = "6487f0b-bsc-patch" }
+reth = { git = "https://github.com/bnb-chain/reth.git", branch = "3f86efc3bb-bsc" }
+reth-cli = { git = "https://github.com/bnb-chain/reth.git", branch = "3f86efc3bb-bsc" }
+reth-cli-commands = { git = "https://github.com/bnb-chain/reth.git", branch = "3f86efc3bb-bsc" }
+reth-basic-payload-builder = { git = "https://github.com/bnb-chain/reth.git", branch = "3f86efc3bb-bsc" }
+reth-db = { git = "https://github.com/bnb-chain/reth.git", branch = "3f86efc3bb-bsc" }
+reth-engine-local = { git = "https://github.com/bnb-chain/reth.git", branch = "3f86efc3bb-bsc" }
+reth-chainspec = { git = "https://github.com/bnb-chain/reth.git", branch = "3f86efc3bb-bsc" }
+reth-cli-util = { git = "https://github.com/bnb-chain/reth.git", branch = "3f86efc3bb-bsc" }
+reth-discv4 = { git = "https://github.com/bnb-chain/reth.git", branch = "3f86efc3bb-bsc", features = ["test-utils"] }
+reth-engine-primitives = { git = "https://github.com/bnb-chain/reth.git", branch = "3f86efc3bb-bsc" }
+reth-ethereum-forks = { git = "https://github.com/bnb-chain/reth.git", branch = "3f86efc3bb-bsc", features = ["serde"] }
+reth-ethereum-payload-builder = { git = "https://github.com/bnb-chain/reth.git", branch = "3f86efc3bb-bsc" }
+reth-ethereum-primitives = { git = "https://github.com/bnb-chain/reth.git", branch = "3f86efc3bb-bsc" }
+reth-eth-wire = { git = "https://github.com/bnb-chain/reth.git", branch = "3f86efc3bb-bsc" }
+reth-eth-wire-types = { git = "https://github.com/bnb-chain/reth.git", branch = "3f86efc3bb-bsc" }
+reth-evm = { git = "https://github.com/bnb-chain/reth.git", branch = "3f86efc3bb-bsc" }
+reth-evm-ethereum = { git = "https://github.com/bnb-chain/reth.git", branch = "3f86efc3bb-bsc" }
+# reth-execution-types = { git = "https://github.com/bnb-chain/reth.git", branch = "extend-8e0ff926b" }
+reth-transaction-pool = { git = "https://github.com/bnb-chain/reth.git", branch = "3f86efc3bb-bsc" }
+reth-node-core = { git = "https://github.com/bnb-chain/reth.git", branch = "3f86efc3bb-bsc" }
+reth-node-api = { git = "https://github.com/bnb-chain/reth.git", branch = "3f86efc3bb-bsc" }
+reth-node-builder = { git = "https://github.com/bnb-chain/reth.git", branch = "3f86efc3bb-bsc" }
+reth-payload-builder = { git = "https://github.com/bnb-chain/reth.git", branch = "3f86efc3bb-bsc" }
+reth-revm = { git = "https://github.com/bnb-chain/reth.git", branch = "3f86efc3bb-bsc" }
+reth-network = { git = "https://github.com/bnb-chain/reth.git", branch = "3f86efc3bb-bsc", features = ["test-utils"] }
+reth-network-p2p = { git = "https://github.com/bnb-chain/reth.git", branch = "3f86efc3bb-bsc" }
+reth-network-api = { git = "https://github.com/bnb-chain/reth.git", branch = "3f86efc3bb-bsc" }
+reth-node-ethereum = { git = "https://github.com/bnb-chain/reth.git", branch = "3f86efc3bb-bsc", features = ["test-utils"] }
+reth-network-peers = { git = "https://github.com/bnb-chain/reth.git", branch = "3f86efc3bb-bsc" }
+reth-payload-primitives = { git = "https://github.com/bnb-chain/reth.git", branch = "3f86efc3bb-bsc" }
+reth-primitives = { git = "https://github.com/bnb-chain/reth.git", branch = "3f86efc3bb-bsc" }
+reth-primitives-traits = { git = "https://github.com/bnb-chain/reth.git", branch = "3f86efc3bb-bsc" }
+reth-provider = { git = "https://github.com/bnb-chain/reth.git", branch = "3f86efc3bb-bsc", features = ["test-utils"] }
+reth-rpc-eth-api = { git = "https://github.com/bnb-chain/reth.git", branch = "3f86efc3bb-bsc" }
+reth-rpc-engine-api = { git = "https://github.com/bnb-chain/reth.git", branch = "3f86efc3bb-bsc" }
+reth-rpc-api = { git = "https://github.com/bnb-chain/reth.git", branch = "3f86efc3bb-bsc" }
+reth-tracing = { git = "https://github.com/bnb-chain/reth.git", branch = "3f86efc3bb-bsc" }
+reth-trie-common = { git = "https://github.com/bnb-chain/reth.git", branch = "3f86efc3bb-bsc" }
+reth-trie-db = { git = "https://github.com/bnb-chain/reth.git", branch = "3f86efc3bb-bsc" }
+reth-rpc = { git = "https://github.com/bnb-chain/reth.git", branch = "3f86efc3bb-bsc" }
+reth-optimism-rpc = { git = "https://github.com/bnb-chain/reth.git", branch = "3f86efc3bb-bsc" }
 
 revm = "27.0.3"
 

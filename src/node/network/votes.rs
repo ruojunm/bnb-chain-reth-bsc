@@ -1,4 +1,4 @@
-use alloy_rlp::{Decodable, Encodable, RlpDecodable, RlpEncodable};
+use alloy_rlp::{Decodable, Encodable};
 use bytes::{BufMut, Bytes};
 
 use crate::consensus::parlia::{vote::VoteEnvelope, votes};
@@ -8,32 +8,61 @@ use crate::node::network::bsc_protocol::protocol::proto::BscProtoMessageId;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BscCapPacket {
     pub protocol_version: u64,
-    pub extra: Bytes,
+    pub extra: Bytes, // This holds raw RLP data, like Go's rlp.RawValue
 }
 
 impl Encodable for BscCapPacket {
     fn encode(&self, out: &mut dyn BufMut) {
-        (BscProtoMessageId::Capability as u8).encode(out);
-        CapPayload { protocol_version: self.protocol_version, extra: self.extra.clone() }
-            .encode(out);
+        // Message ID should be sent as raw byte, not RLP-encoded
+        out.put_u8(BscProtoMessageId::Capability as u8);
+        
+        // Encode as RLP list: [protocol_version, extra]
+        // Extra is raw RLP data (like Go's rlp.RawValue), so insert directly
+        let protocol_version_encoded = alloy_rlp::encode(&self.protocol_version);
+        
+        // Calculate list payload length (protocol_version + raw extra data)
+        let payload_length = protocol_version_encoded.len() + self.extra.len();
+        
+        // Encode list header  
+        alloy_rlp::Header { list: true, payload_length }.encode(out);
+        
+        // Encode protocol version
+        out.put_slice(&protocol_version_encoded);
+        // Insert raw extra data directly (no additional RLP encoding)
+        out.put_slice(&self.extra);
     }
 }
 
 impl Decodable for BscCapPacket {
     fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
-        let message_id = u8::decode(buf)?;
+        // Message ID is sent as raw byte, not RLP-encoded
+        if buf.is_empty() {
+            return Err(alloy_rlp::Error::InputTooShort);
+        }
+        let message_id = buf[0];
+        *buf = &buf[1..];
         if message_id != (BscProtoMessageId::Capability as u8) {
             return Err(alloy_rlp::Error::Custom("Invalid message ID for BscCapPacket"));
         }
-        let CapPayload { protocol_version, extra } = CapPayload::decode(buf)?;
+        
+        // Decode RLP list: [protocol_version, extra]
+        let header = alloy_rlp::Header::decode(buf)?;
+        if !header.list {
+            return Err(alloy_rlp::Error::UnexpectedString);
+        }
+        
+        let protocol_version = u64::decode(buf)?;
+        
+        // Extra is raw RLP data - read remaining bytes directly
+        let remaining_len = header.payload_length - 1; // -1 for protocol_version (single byte)
+        if buf.len() < remaining_len {
+            return Err(alloy_rlp::Error::InputTooShort);
+        }
+        let extra = Bytes::copy_from_slice(&buf[..remaining_len]);
+        *buf = &buf[remaining_len..];
+        
         Ok(Self { protocol_version, extra })
     }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, RlpEncodable, RlpDecodable)]
-struct CapPayload {
-    protocol_version: u64,
-    extra: Bytes,
 }
 
 /// VotesPacket carries a list of votes (message id 0x01)

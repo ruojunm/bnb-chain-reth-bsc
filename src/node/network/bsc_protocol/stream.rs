@@ -36,14 +36,12 @@ pub struct BscProtocolConnection {
 impl BscProtocolConnection {
     pub fn new(conn: ProtocolConnection, commands: UnboundedReceiver<BscCommand>, is_dialer: bool) -> Self {
         let handshake_deadline = Some(Box::pin(tokio::time::sleep(HANDSHAKE_TIMEOUT)));
-        let initial_capability = if is_dialer {
-            Some(BscCommand::SendCapability { 
-                protocol_version: BSC_PROTOCOL_VERSION, 
-                extra: Bytes::new() 
-            })
-        } else {
-            None
-        };
+        // Both sides should send initial capability in BSC protocol
+        // BSC sends []byte{00} which in RLP is encoded as a single byte 0x00
+        let initial_capability = Some(BscCommand::SendCapability { 
+            protocol_version: BSC_PROTOCOL_VERSION, 
+            extra: Bytes::from_static(&[0x00u8]) // Raw RLP: single 0x00 byte represents []byte{00}
+        });
         
         Self { 
             conn, 
@@ -59,12 +57,33 @@ impl BscProtocolConnection {
         match cmd {
             BscCommand::SendCapability { protocol_version, extra } => {
                 let mut buf = BytesMut::new();
-                BscCapPacket { protocol_version, extra }.encode(&mut buf);
+                let cap_packet = BscCapPacket { protocol_version, extra };
+                cap_packet.encode(&mut buf);
+                
+                tracing::trace!(
+                    target: "bsc_protocol",
+                    version = protocol_version,
+                    extra_len = cap_packet.extra.len(),
+                    encoded_len = buf.len(),
+                    all_bytes = format!("{:02x?}", &buf[..]),
+                    "Encoded BSC capability packet"
+                );
+                
                 buf
             }
             BscCommand::SendVotes(votes) => {
                 let mut buf = BytesMut::new();
+                let vote_count = votes.len();
                 VotesPacket(votes).encode(&mut buf);
+                
+                tracing::debug!(
+                    target: "bsc_protocol",
+                    vote_count = vote_count,
+                    encoded_len = buf.len(),
+                    first_bytes = format!("{:02x?}", &buf[..buf.len().min(8)]),
+                    "Encoded BSC votes packet"
+                );
+                
                 buf
             }
         }
@@ -120,6 +139,14 @@ impl BscProtocolConnection {
             return Poll::Ready(None);
         }
 
+        // Debug: Show what we received
+        tracing::trace!(
+            target: "bsc_protocol",
+            frame_len = slice.len(),
+            frame_bytes = format!("{:02x?}", &slice[..slice.len().min(16)]),
+            "Raw received frame in handshake"
+        );
+        
         match BscCapPacket::decode(&mut &slice[..]) {
             Ok(pkt) => {
                 if pkt.protocol_version != BSC_PROTOCOL_VERSION {
@@ -127,7 +154,13 @@ impl BscProtocolConnection {
                     return Poll::Ready(None);
                 }
 
-                tracing::debug!(target: "bsc_protocol", version = pkt.protocol_version, "Received peer capability");
+                tracing::trace!(target: "bsc_protocol", version = pkt.protocol_version, "Received peer capability");
+                
+                tracing::trace!(
+                    target: "bsc_protocol", 
+                    is_dialer = self.is_dialer,
+                    "🎉 BSC handshake completed successfully"
+                );
                 
                 self.handshake_completed = true;
                 self.handshake_deadline = None;
@@ -136,13 +169,13 @@ impl BscProtocolConnection {
                     // Responder sends capability response
                     let response = Self::encode_command(BscCommand::SendCapability {
                         protocol_version: BSC_PROTOCOL_VERSION,
-                        extra: Bytes::from_static(b"00")
+                        extra: Bytes::from_static(&[0x00u8]) // Raw RLP: single 0x00 byte represents []byte{00}
                     });
-                    tracing::debug!(target: "bsc_protocol", "BSC handshake completed (responder)");
+                    tracing::debug!(target: "bsc_protocol", "BSC handshake completed (responder) - sending response");
                     Poll::Ready(Some(Some(response)))
                 } else {
                     // Dialer just completes handshake
-                    tracing::debug!(target: "bsc_protocol", "BSC handshake completed (dialer)");
+                    tracing::debug!(target: "bsc_protocol", "BSC handshake completed (dialer) - no response needed");
                     Poll::Ready(Some(None))
                 }
             }
@@ -170,17 +203,6 @@ impl BscProtocolConnection {
                     tracing::warn!(target: "bsc_protocol", "Failed to decode VotesPacket");
                 }
             }
-            x if x == BscProtoMessageId::Capability as u8 => {
-                tracing::debug!(target: "bsc_protocol", "Processing additional capability message");
-                if let Ok(packet) = BscCapPacket::decode(&mut &slice[..]) {
-                    tracing::debug!(
-                        target: "bsc_protocol",
-                        version = packet.protocol_version,
-                        extra_len = packet.extra.len(),
-                        "Received additional peer capability"
-                    );
-                }
-            }
             _ => {
                 tracing::debug!(target: "bsc_protocol", msg_id = format_args!("{:#04x}", msg_id), "Unknown BSC message id");
             }
@@ -193,18 +215,17 @@ impl Stream for BscProtocolConnection {
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let this = self.get_mut();
-        tracing::info!(
-            target: "bsc_protocol", 
-            handshake_completed = this.handshake_completed,
-            is_dialer = this.is_dialer,
-            "🔄 BSC poll_next called"
-        );
 
-        // Send initial capability if we're the dialer
+        // Send initial capability (both dialer and responder)
         if let Some(initial_cmd) = this.initial_capability.take() {
-            tracing::debug!(target: "bsc_protocol", "Sending initial capability as dialer");
+            tracing::trace!(
+                target: "bsc_protocol", 
+                is_dialer = this.is_dialer,
+                "Sending initial BSC capability packet"
+            );
             return Poll::Ready(Some(Self::encode_command(initial_cmd)));
         }
+
 
         loop {
             // Check for outgoing commands first
@@ -230,7 +251,9 @@ impl Stream for BscProtocolConnection {
                 }
             } else {
                 this.handle_protocol_message(&raw_frame);
-                return Poll::Pending; // No response needed
+                // After handshake, check if there are more messages to process
+                // If not, we'll loop back and check for commands/incoming frames
+                continue;
             }
         }
     }
