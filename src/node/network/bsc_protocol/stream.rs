@@ -195,12 +195,15 @@ impl BscProtocolConnection {
         match msg_id {
             x if x == BscProtoMessageId::Votes as u8 => {
                 tracing::debug!(target: "bsc_protocol", "Processing votes message");
-                if let Ok(packet) = VotesPacket::decode(&mut &slice[..]) {
-                    let count = packet.0.len();
-                    handle_votes_broadcast(packet);
-                    tracing::debug!(target: "bsc_protocol", count, "Processed votes packet");
-                } else {
-                    tracing::warn!(target: "bsc_protocol", "Failed to decode VotesPacket");
+                match VotesPacket::decode(&mut &slice[..]) {
+                    Ok(packet) => {
+                        let count = packet.0.len();
+                        handle_votes_broadcast(packet);
+                        tracing::debug!(target: "bsc_protocol", count, "Processed votes packet");
+                    }
+                    Err(e) => {
+                        tracing::warn!(target: "bsc_protocol", error = %e, "Failed to decode VotesPacket");
+                    }
                 }
             }
             _ => {
@@ -258,5 +261,4 @@ impl Stream for BscProtocolConnection {
         }
     }
 }
-
 
