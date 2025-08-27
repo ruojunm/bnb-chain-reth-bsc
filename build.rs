@@ -1,5 +1,4 @@
-use std::collections::BTreeMap;
-use std::fs;
+use std::{collections::BTreeMap, fs};
 
 fn main() {
     // Define hardforks that contain system contracts (matching hardfork_to_dir_name function)

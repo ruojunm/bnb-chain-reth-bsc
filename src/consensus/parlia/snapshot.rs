@@ -136,6 +136,7 @@ impl Snapshot {
         }
 
         // Clone base.
+        let original_snap = self.clone();
         let mut snap = self.clone();
         snap.block_hash = next_header.hash_slow();
         snap.block_number = block_number;
@@ -237,6 +238,7 @@ impl Snapshot {
             snap.validators = new_validators;
             snap.validators_map = validators_map;
         }
+        tracing::debug!("Succeed to apply snapshot, block_number: {:?}, original_snap: {:?}, new_snap: {:?}", block_number, original_snap, snap);
         Some(snap)
     }
 
@@ -267,7 +269,7 @@ impl Snapshot {
         
         if !is_inturn {
             tracing::debug!(
-                "🎯 [BSC] is_inturn check: proposer=0x{:x}, inturn_validator=0x{:x}, is_inturn={}, validators={:?}",
+                "is_inturn check: proposer=0x{:x}, inturn_validator=0x{:x}, is_inturn={}, validators={:?}",
                 proposer, inturn_val, is_inturn, self.validators
             );
         }
@@ -310,6 +312,7 @@ impl Snapshot {
         for (&block, &v) in &self.recent_proposers {
             if block <= left_bound || v == Address::default() { continue; }
             *counts.entry(v).or_insert(0) += 1;
+            // tracing::debug!("count_recent_proposers, block: {:?}, validator: {:?}, count: {:?}", block, v, counts.get(&v).unwrap());
         }
         counts
     }
@@ -325,7 +328,7 @@ impl Snapshot {
             let allowed = u64::from(self.turn_length.unwrap_or(1));
             if u64::from(times) >= allowed { 
                 tracing::warn!("Recently signed, validator: {:?}, block_number: {:?}, times: {:?}, allowed: {:?}", validator, self.block_number, times, allowed);
-                return true; 
+                return true;
             }
         }
         false

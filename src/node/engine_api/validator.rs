@@ -1,30 +1,32 @@
+use super::payload::BscPayloadTypes;
+// use crate::consensus::parlia::seal::{default_sign_fn, SealBlock};
+// use crate::shared::get_snapshot_provider;
 use crate::{chainspec::BscChainSpec, hardforks::BscHardforks, BscBlock, BscPrimitives};
 use alloy_consensus::BlockHeader;
 use alloy_eips::eip4895::Withdrawal;
-use alloy_primitives::B256;
-use alloy_rpc_types_engine::{PayloadAttributes, PayloadError};
+use alloy_primitives::{B256};
+use alloy_rpc_types_engine::PayloadError;
 use reth::{
     api::{FullNodeComponents, NodeTypes},
-    builder::{rpc::EngineValidatorBuilder, AddOnsContext},
+    builder::{
+        rpc::{BasicEngineValidatorBuilder, PayloadValidatorBuilder},
+        AddOnsContext,
+    },
     consensus::ConsensusError,
 };
-use reth_engine_primitives::{EngineValidator, ExecutionPayload, PayloadValidator};
-use reth_payload_primitives::{
-    EngineApiMessageVersion, EngineObjectValidationError, NewPayloadError, PayloadOrAttributes,
-};
+use reth_engine_primitives::{ExecutionPayload, PayloadValidator};
+use reth_payload_primitives::NewPayloadError;
 use reth_primitives::{RecoveredBlock, SealedBlock};
-use reth_primitives_traits::Block as _;
 use reth_trie_common::HashedPostState;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
-
-use super::payload::BscPayloadTypes;
+use reth_primitives_traits::Block;
 
 #[derive(Debug, Default, Clone)]
 #[non_exhaustive]
-pub struct BscEngineValidatorBuilder;
+pub struct BscPayloadValidatorBuilder;
 
-impl<Node, Types> EngineValidatorBuilder<Node> for BscEngineValidatorBuilder
+impl<Node, Types> PayloadValidatorBuilder<Node> for BscPayloadValidatorBuilder
 where
     Types:
         NodeTypes<ChainSpec = BscChainSpec, Payload = BscPayloadTypes, Primitives = BscPrimitives>,
@@ -36,6 +38,9 @@ where
         Ok(BscEngineValidator::new(Arc::new(ctx.config.chain.clone().as_ref().clone())))
     }
 }
+
+/// BSC engine validator builder that wraps the payload validator
+pub type BscEngineValidatorBuilder = BasicEngineValidatorBuilder<BscPayloadValidatorBuilder>;
 
 /// Validator for Optimism engine API.
 #[derive(Debug, Clone)]
@@ -104,24 +109,6 @@ impl PayloadValidator<BscPayloadTypes> for BscEngineValidator {
     }
 }
 
-impl EngineValidator<BscPayloadTypes> for BscEngineValidator {
-    fn validate_version_specific_fields(
-        &self,
-        _version: EngineApiMessageVersion,
-        _payload_or_attrs: PayloadOrAttributes<'_, BscExecutionData, PayloadAttributes>,
-    ) -> Result<(), EngineObjectValidationError> {
-        Ok(())
-    }
-
-    fn ensure_well_formed_attributes(
-        &self,
-        _version: EngineApiMessageVersion,
-        _attributes: &PayloadAttributes,
-    ) -> Result<(), EngineObjectValidationError> {
-        Ok(())
-    }
-}
-
 /// Execution payload validator.
 #[derive(Clone, Debug)]
 pub struct BscExecutionPayloadValidator<ChainSpec> {
@@ -140,10 +127,24 @@ where
     ) -> Result<SealedBlock<BscBlock>, PayloadError> {
         let block = payload.0;
 
-        let expected_hash = block.header.hash_slow();
+        // let snapshot_provider = if let Some(provider) = get_snapshot_provider() {
+        //     provider.clone()
+        // } else {
+        //     tracing::error!("Failed to register Parlia RPC due to can not get snapshot provider");
+        //     return Err(NewPayloadError::Other(Box::from("Failed to get snapshot provider")))
+        // };
+        //
+        // let validator_address = Address::default(); // TODO get validator_address from config
+        // let seal_block_gen = SealBlock::new_with_sign_fn(
+        //     snapshot_provider,
+        //     self.inner.clone(),
+        //     validator_address,
+        //     default_sign_fn,
+        // );
 
-        // First parse the block
+        let expected_hash = block.header.hash_slow();
         let sealed_block = block.seal_slow();
+        // let sealed_block = seal_block_gen.seal(block).map_err(NewPayloadError::other)?;
 
         // Ensure the hash included in the payload matches the block hash
         if expected_hash != sealed_block.hash() {

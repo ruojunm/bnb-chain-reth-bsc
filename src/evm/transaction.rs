@@ -153,10 +153,7 @@ impl SystemCallTx for BscTxEnv {
             .build()
             .unwrap();
 
-        Self {
-            base,
-            is_system_transaction: true,
-        }
+        Self { base, is_system_transaction: true }
     }
 }
 

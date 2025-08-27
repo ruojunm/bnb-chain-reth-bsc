@@ -1,5 +1,6 @@
 use clap::{Args, Parser};
-use reth::{builder::NodeHandle, cli::Cli, consensus::noop::NoopConsensus};
+use reth::{builder::NodeHandle, cli::Cli};
+use reth_bsc::node::consensus::BscConsensus;
 use reth_bsc::{
     chainspec::parser::BscChainSpecParser,
     node::{evm::config::BscEvmConfig, BscNode},
@@ -25,14 +26,9 @@ fn main() -> eyre::Result<()> {
     }
 
     Cli::<BscChainSpecParser, NoArgs>::parse().run_with_components::<BscNode>(
-        |spec| {
-            // ComponentsBuilder BscConsensusBuilder automatically overwrite it to ParliaConsensus.
-            (BscEvmConfig::new(spec.clone()), NoopConsensus::arc())
-        },
+        |spec| (BscEvmConfig::new(spec.clone()), BscConsensus::new(spec)),
         async move |builder, _| {
-            // Create node with proper engine handle communication (matches official BSC)
             let (node, engine_handle_tx) = BscNode::new();
-            
             let NodeHandle { node, node_exit_future: exit_future } =
                 builder.node(node)
                     .extend_rpc_modules(move |ctx| {

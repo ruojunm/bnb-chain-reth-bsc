@@ -4,7 +4,7 @@ use alloy_primitives::{B256, U256, bytes::BytesMut, keccak256};
 use alloy_rlp::Encodable;
 use bytes::BufMut;
 use std::env;
-use super::constants::EXTRA_SEAL;
+use super::constants::EXTRA_SEAL_LEN;
 
 const SECONDS_PER_DAY: u64 = 86400; // 24 * 60 * 60
 
@@ -42,7 +42,7 @@ pub fn encode_header_with_chain_id(header: &Header, out: &mut dyn BufMut, chain_
     Encodable::encode(&header.gas_limit, out);
     Encodable::encode(&header.gas_used, out);
     Encodable::encode(&header.timestamp, out);
-    Encodable::encode(&header.extra_data[..header.extra_data.len() - EXTRA_SEAL], out); // will panic if extra_data is less than EXTRA_SEAL_LEN
+    Encodable::encode(&header.extra_data[..header.extra_data.len() - EXTRA_SEAL_LEN], out); // will panic if extra_data is less than EXTRA_SEAL_LEN
     Encodable::encode(&header.mix_hash, out);
     Encodable::encode(&header.nonce, out);
 
@@ -80,7 +80,7 @@ fn rlp_header(header: &Header, chain_id: u64) -> alloy_rlp::Header {
     rlp_head.payload_length += header.gas_used.length(); // gas_used
     rlp_head.payload_length += header.timestamp.length(); // timestamp
     rlp_head.payload_length +=
-        &header.extra_data[..header.extra_data.len() - EXTRA_SEAL].length(); // extra_data
+        &header.extra_data[..header.extra_data.len() - EXTRA_SEAL_LEN].length(); // extra_data
     rlp_head.payload_length += header.mix_hash.length(); // mix_hash
     rlp_head.payload_length += header.nonce.length(); // nonce
 
@@ -100,7 +100,6 @@ fn rlp_header(header: &Header, chain_id: u64) -> alloy_rlp::Header {
     rlp_head
 }
 
-
 pub fn calculate_millisecond_timestamp(header: &Header) -> u64 {
     let seconds = header.timestamp;
     let mix_digest = header.mix_hash;
@@ -118,4 +117,40 @@ pub fn calculate_millisecond_timestamp(header: &Header) -> u64 {
     };
 
     seconds * 1000 + ms_part
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloy_consensus::Header;
+    use alloy_primitives::B256;
+
+    #[test]
+    fn test_calculate_millisecond_timestamp_without_mix_hash() {
+        // Create a header with current timestamp and zero mix_hash
+        let timestamp =
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+
+        let header = Header { timestamp, mix_hash: B256::ZERO, ..Default::default() };
+
+        let result = calculate_millisecond_timestamp(&header);
+        assert_eq!(result, timestamp * 1000);
+    }
+
+    #[test]
+    fn test_calculate_millisecond_timestamp_with_milliseconds() {
+        // Create a header with current timestamp and mix_hash containing milliseconds
+        let timestamp =
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+
+        let milliseconds = 750u64;
+        let mut mix_hash_bytes = [0u8; 32];
+        mix_hash_bytes[24..32].copy_from_slice(&milliseconds.to_be_bytes());
+        let mix_hash = B256::new(mix_hash_bytes);
+
+        let header = Header { timestamp, mix_hash, ..Default::default() };
+
+        let result = calculate_millisecond_timestamp(&header);
+        assert_eq!(result, timestamp * 1000 + milliseconds);
+    }
 }

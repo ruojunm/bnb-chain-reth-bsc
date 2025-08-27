@@ -174,12 +174,12 @@ mod tests {
     #[test]
     fn test_blob_params_at_timestamp() {
         let chain_spec = BscChainSpec::from(bsc_testnet());
-        
+
         // Test timestamp before Cancun (Cancun activates at 1713330442 on testnet)
         let before_cancun_timestamp = 1713330441;
         let result = chain_spec.blob_params_at_timestamp(before_cancun_timestamp);
         assert!(result.is_none(), "Should return None for timestamp before Cancun");
-        
+
         // Test timestamp during Cancun (between Cancun and Prague)
         // Prague activates at 1740452880 on testnet
         let during_cancun_timestamp = 1713330442; // Cancun activation time
@@ -190,18 +190,21 @@ mod tests {
             assert_eq!(blob_params.target_blob_count, 3);
             assert_eq!(blob_params.max_blob_count, 6);
         }
-        
+
         // Test timestamp after Prague activation
         let after_prague_timestamp = 1740452880; // Prague activation time
         let result = chain_spec.blob_params_at_timestamp(after_prague_timestamp);
         // BSC doesn't modify blob params in Prague, so should still return Cancun params
-        assert!(result.is_some(), "Should return Some for timestamp after Prague (BSC doesn't modify blob params)");
+        assert!(
+            result.is_some(),
+            "Should return Some for timestamp after Prague (BSC doesn't modify blob params)"
+        );
         if let Some(blob_params) = result {
             // Check the correct blob param values (should be same as Cancun)
             assert_eq!(blob_params.target_blob_count, 3);
             assert_eq!(blob_params.max_blob_count, 6);
         }
-        
+
         // Test timestamp well after Prague
         let well_after_prague_timestamp = 1740452881;
         let result = chain_spec.blob_params_at_timestamp(well_after_prague_timestamp);
@@ -212,5 +215,4 @@ mod tests {
             assert_eq!(blob_params.max_blob_count, 6);
         }
     }
-    
 }

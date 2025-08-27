@@ -1,8 +1,3 @@
-//! Gas-limit calculation and validation for Parlia (BSC).
-//! Mirrors Go reference implementation in `bsc_official/core/block_validator.go`.
-
-
-/// Minimum allowed gas-limit (same as `params.MinGasLimit`).
 pub const MIN_GAS_LIMIT: u64 = 5_000;
 
 /// Bound divisor before Lorentz.

@@ -1,726 +1,88 @@
-use super::{ParliaHeaderValidator, SnapshotProvider, BscConsensusValidator, Snapshot, TransactionSplitter, SplitTransactions, constants::{DIFF_INTURN, DIFF_NOTURN, EXTRA_VANITY, EXTRA_SEAL, VALIDATOR_NUMBER_SIZE, VALIDATOR_BYTES_LEN_AFTER_LUBAN, VALIDATOR_BYTES_LEN_BEFORE_LUBAN, TURN_LENGTH_SIZE}};
-use super::error::ParliaConsensusError;
-use alloy_consensus::{Header, TxReceipt, Transaction, BlockHeader};
-use reth_primitives_traits::{GotExpected, SignerRecoverable};
-use crate::{
-    node::primitives::BscBlock,
-    hardforks::BscHardforks,
-    BscPrimitives,
-
-};
-use reth::consensus::{Consensus, FullConsensus, ConsensusError, HeaderValidator};
-use reth_primitives::Receipt;
-use reth_primitives_traits::proofs;
-use reth_provider::BlockExecutionResult;
-use reth_primitives_traits::{Block, SealedBlock, SealedHeader, RecoveredBlock};
-use reth_chainspec::EthChainSpec;
 use std::sync::Arc;
-use std::collections::HashMap;
+use std::time::SystemTime;
+use lazy_static::lazy_static;
+use std::sync::RwLock;
 
-/// Enhanced Parlia consensus that implements proper pre/post execution validation
-#[derive(Debug, Clone)]
-pub struct ParliaConsensus<ChainSpec, P> {
-    chain_spec: Arc<ChainSpec>,
-    header_validator: Arc<ParliaHeaderValidator<ChainSpec>>,
-    consensus_validator: Arc<BscConsensusValidator<ChainSpec>>,
-    snapshot_provider: Arc<P>,
-    epoch: u64,
+use schnellru::LruMap;
+use schnellru::ByLength;
+use alloy_primitives::{Address, B256};
+use secp256k1::{SECP256K1, Message, ecdsa::{RecoveryId, RecoverableSignature}};
+use crate::hardforks::BscHardforks;
+use reth_chainspec::EthChainSpec;
+use alloy_consensus::{Header, BlockHeader};
+use alloy_rlp::Decodable;
+use super::{
+    VoteAttestation, ParliaConsensusError, VoteAddress, Snapshot,
+    constants::{
+        EXTRA_VANITY_LEN, EXTRA_SEAL_LEN, VALIDATOR_NUMBER_SIZE, 
+        VALIDATOR_BYTES_LEN_AFTER_LUBAN, VALIDATOR_BYTES_LEN_BEFORE_LUBAN, TURN_LENGTH_SIZE,
+    },
+    hash_with_chain_id,
+    provider::ValidatorsInfo,
+    BACKOFF_TIME_OF_INITIAL, BACKOFF_TIME_OF_WIGGLE, DEFAULT_TURN_LENGTH,LORENTZ_BACKOFF_TIME_OF_INITIAL,
+};
+use crate::consensus::parlia::go_rng::{RngSource, Shuffle};
+use tracing::{trace, debug};
+
+const RECOVERED_PROPOSER_CACHE_NUM: usize = 4096;
+const ADDRESS_LENGTH: usize = 20; // Ethereum address length in bytes
+
+lazy_static! {
+    // recovered proposer cache map by block_number: proposer_address
+    static ref RECOVERED_PROPOSER_CACHE: RwLock<LruMap<B256, Address, ByLength>> = RwLock::new(LruMap::new(ByLength::new(RECOVERED_PROPOSER_CACHE_NUM as u32)));
 }
 
-impl<ChainSpec, P> ParliaConsensus<ChainSpec, P>
-where
-    ChainSpec: EthChainSpec + BscHardforks + 'static,
-    P: SnapshotProvider + std::fmt::Debug + 'static,
-{
-    pub fn new(
-        chain_spec: Arc<ChainSpec>,
-        snapshot_provider: Arc<P>,
-        epoch: u64,
-    ) -> Self {
-        let header_validator = Arc::new(ParliaHeaderValidator::new(chain_spec.clone()));
-        let consensus_validator = Arc::new(BscConsensusValidator::new(chain_spec.clone()));
-        
-        let consensus = Self { 
-            chain_spec,
-            header_validator,
-            consensus_validator,
-            snapshot_provider,
-            epoch,
-        };
-        
-        // Initialize genesis snapshot if needed
-        consensus.ensure_genesis_snapshot();
-        
-        consensus
-    }
-
-    /// Create consensus with database-backed persistent snapshots
-    pub fn with_database<DB: reth_db::database::Database + 'static>(
-        chain_spec: Arc<ChainSpec>,
-        database: DB,
-        epoch: u64,
-        cache_size: usize,
-    ) -> ParliaConsensus<ChainSpec, crate::consensus::parlia::provider::DbSnapshotProvider<DB>> {
-        let snapshot_provider = Arc::new(
-            crate::consensus::parlia::provider::DbSnapshotProvider::new(database, cache_size)
-        );
-        let consensus = ParliaConsensus::new(chain_spec, snapshot_provider, epoch);
-        
-        // Initialize genesis snapshot if needed
-        consensus.ensure_genesis_snapshot();
-        
-        consensus
-    }
-
-    /// Validate block pre-execution using Parlia rules
-    fn validate_block_pre_execution_impl(&self, block: &SealedBlock<BscBlock>) -> Result<(), ConsensusError> {
-        // Check transaction root
-        if let Err(error) = block.ensure_transaction_root_valid() {
-            return Err(ConsensusError::BodyTransactionRootDiff(error.into()));
-        }
-
-        // EIP-4844: Blob gas validation for Cancun fork
-        if BscHardforks::is_cancun_active_at_timestamp(self.chain_spec.as_ref(), block.timestamp) {
-            self.validate_cancun_blob_gas(block)?;
-        }
-
-        Ok(())
-    }
-
-    /// Ensure genesis snapshot exists
-    fn ensure_genesis_snapshot(&self) {
-        // Check if genesis snapshot already exists
-        if self.snapshot_provider.snapshot(0).is_some() {
-            return;
-        }
-
-        // Create genesis snapshot from chain spec
-        if let Ok(genesis_snapshot) = Self::create_genesis_snapshot(self.chain_spec.clone(), self.epoch) {
-            self.snapshot_provider.insert(genesis_snapshot);
-            tracing::info!("🎯 [BSC] Created genesis snapshot for block 0");
-        } else {
-            tracing::warn!("⚠️ [BSC] Failed to create genesis snapshot");
-        }
-    }
-
-    /// Get reference to the snapshot provider
-    pub fn snapshot_provider(&self) -> &Arc<P> {
-        &self.snapshot_provider
-    }
-
-    /// Create genesis snapshot from BSC chain specification
-    pub fn create_genesis_snapshot(chain_spec: Arc<ChainSpec>, epoch: u64) -> Result<crate::consensus::parlia::snapshot::Snapshot, ConsensusError> 
-    where
-        ChainSpec: EthChainSpec + BscHardforks + 'static,
-    {
-        let genesis_header = chain_spec.genesis_header();
-        let validators = Self::parse_genesis_validators_static(genesis_header.extra_data())?;
-        
-        if validators.is_empty() {
-            return Err(ConsensusError::Other("No validators found in genesis header".into()));
-        }
-
-        let genesis_hash = alloy_primitives::keccak256(alloy_rlp::encode(genesis_header));
-
-        let snapshot = crate::consensus::parlia::snapshot::Snapshot::new(
-            validators,
-            0, // block number
-            genesis_hash, // block hash
-            epoch, // epoch length
-            None, // no vote addresses pre-Luban
-        );
-
-        tracing::info!("🚀 [BSC] Genesis snapshot created with {} validators", snapshot.validators.len());
-        Ok(snapshot)
-    }
-
-
-
-    /// Parse genesis validators from BSC extraData (static version)
-    fn parse_genesis_validators_static(extra_data: &alloy_primitives::Bytes) -> Result<Vec<alloy_primitives::Address>, ConsensusError> {
-        const EXTRA_VANITY_LEN: usize = 32;
-        const EXTRA_SEAL_LEN: usize = 65;
-
-        if extra_data.len() <= EXTRA_VANITY_LEN + EXTRA_SEAL_LEN {
-            return Err(ConsensusError::Other("extraData too short for validator list".into()));
-        }
-
-        let validator_bytes = &extra_data[EXTRA_VANITY_LEN..extra_data.len() - EXTRA_SEAL_LEN];
-        
-        if validator_bytes.len() % 20 != 0 {
-            return Err(ConsensusError::Other("validator data length not divisible by 20".into()));
-        }
-
-        let mut validators = Vec::new();
-        for chunk in validator_bytes.chunks(20) {
-            let address = alloy_primitives::Address::from_slice(chunk);
-            validators.push(address);
-        }
-
-        tracing::debug!("📋 [BSC] Parsed {} validators from genesis extraData", validators.len());
-        Ok(validators)
-    }
-
-    /// Validate block post-execution using Parlia rules
-    fn validate_block_post_execution_impl(
-        &self,
-        block: &RecoveredBlock<BscBlock>,
-        result: &BlockExecutionResult<Receipt>,
-    ) -> Result<(), ConsensusError> {
-        let _header = block.header();
-        let receipts = &result.receipts;
-
-        // 1. Basic post-execution validation (gas used, receipts root, logs bloom)
-        self.validate_basic_post_execution_fields(block, receipts)?;
-
-        // 2. BSC-specific post-execution validation
-        self.validate_parlia_post_execution_fields(block, receipts)?;
-
-        Ok(())
-    }
-
-    /// Validate basic post-execution fields (gas, receipts, logs)
-    fn validate_basic_post_execution_fields(
-        &self,
-        block: &RecoveredBlock<BscBlock>,
-        receipts: &[Receipt],
-    ) -> Result<(), ConsensusError> {
-        let header = block.header();
-
-        // Check if gas used matches the value set in header
-        let cumulative_gas_used = receipts.last()
-            .map(|receipt| receipt.cumulative_gas_used)
-            .unwrap_or(0);
-        
-        if header.gas_used != cumulative_gas_used {
-            return Err(ConsensusError::Other(
-                format!("Gas used mismatch: header={}, receipts={}", header.gas_used, cumulative_gas_used).into()
-            ));
-        }
-
-        // Verify receipts root and logs bloom (after Byzantium fork)
-        if self.chain_spec.is_byzantium_active_at_block(header.number) {
-            self.verify_receipts_and_logs(header, receipts)?;
-        }
-
-        Ok(())
-    }
-
-    /// Validate BSC-specific post-execution fields
-    fn validate_parlia_post_execution_fields(
-        &self,
-        block: &RecoveredBlock<BscBlock>,
-        _receipts: &[Receipt],
-    ) -> Result<(), ConsensusError> {
-        let header = block.header();
-
-        // Skip genesis block
-        if header.number == 0 {
-            return Ok(());
-        }
-
-        // Get snapshot for validation (should be available during post-execution)
-        let parent_number = header.number - 1;
-        let snapshot = match self.snapshot_provider.snapshot(parent_number) {
-            Some(snapshot) => {
-                tracing::debug!(
-                    "BSC: Using snapshot for block {} to validate block {} (snapshot_block_number={})",
-                    parent_number, header.number, snapshot.block_number
-                );
-                snapshot
-            },
-            None => {
-                // During post-execution, snapshots should be available since blocks are processed sequentially
-                tracing::warn!(
-                    block_number = header.number,
-                    parent_number = parent_number,
-                    "Snapshot not available during post-execution validation - this should not happen"
-                );
-                return Err(ConsensusError::Other(format!(
-                    "Snapshot for block {} not available during post-execution", parent_number
-                ).into()));
-            }
-        };
-
-        // Create a SealedHeader for validation methods
-        let sealed_header = SealedHeader::new(header.clone(), block.hash());
-
-        // Full BSC Parlia validation during post-execution (when dependencies are available)
-        // 1. Block timing constraints (Ramanujan hardfork)
-        self.verify_block_timing(&sealed_header, &snapshot)?;
-
-        // 2. Vote attestation (Plato hardfork)
-        self.verify_vote_attestation(&sealed_header)?;
-
-        // 3. Seal verification (signature recovery and validator authorization)
-        self.verify_seal(&sealed_header, &snapshot)?;
-
-        // 4. Turn-based proposing (difficulty validation)
-        self.verify_difficulty(&sealed_header, &snapshot)?;
-
-        // 5. Turn length validation (Bohr hardfork)
-        self.verify_turn_length(&sealed_header)?;
-
-        // 6. System transactions validation
-        self.validate_system_transactions(block)?;
-
-        // 7. Gas limit validation (BSC-specific, hardfork-aware)
-        if let Some(parent_header) = self.get_parent_header(header) {
-            self.verify_gas_limit(&sealed_header, &parent_header)?;
-        }
-
-        // 8. Slash reporting for out-of-turn validators
-        self.report_slash_evidence(&sealed_header, &snapshot)?;
-
-        // 9. Validate epoch transitions
-        if header.number % self.epoch == 0 {
-            // TODO: Implement epoch transition validation
-            // This would verify validator set updates every 200 blocks
-            tracing::debug!("Epoch boundary at block {}", header.number);
-        }
-
-        tracing::debug!("Succeed to finish full post-execution validation for block {}", header.number);
-        Ok(())
-    }
-
-    /// Validate system transactions using splitTxs logic
-    fn validate_system_transactions(&self, block: &RecoveredBlock<BscBlock>) -> Result<(), ConsensusError> {
-        let header = block.header();
-        // Extract the raw transactions from the block  
-        let transactions: Vec<_> = block.body().transactions().cloned().collect();
-        let beneficiary = header.beneficiary;
-
-        // Split transactions into user and system transactions
-        let split_result = TransactionSplitter::split_transactions(&transactions, beneficiary)
-            .map_err(|e| ConsensusError::Other(format!("Failed to split transactions: {}", e).into()))?;
-
-        // Log transaction split results for debugging
-        // TODO: Remove debug logging in production
-        if split_result.system_count() > 0 {
-            // System transactions found - validate them
-            self.validate_split_system_transactions(&split_result, header)?;
-        }
-
-        Ok(())
-    }
-
-    /// Validate the identified system transactions
-    fn validate_split_system_transactions(
-        &self,
-        split: &SplitTransactions,
-        header: &alloy_consensus::Header,
-    ) -> Result<(), ConsensusError> {
-        // TODO: Implement comprehensive system transaction validation:
-        // 1. Verify system transactions are in the correct order
-        // 2. Validate system transaction parameters (SlashIndicator, StakeHub, etc.)
-        // 3. Check that required system transactions are present
-        // 4. Validate system transaction execution results
-
-        // For now, just ensure we can identify system transactions correctly
-        for (i, system_tx) in split.system_txs.iter().enumerate() {
-            // Basic validation: system transaction should have gas price 0
-            if system_tx.max_fee_per_gas() != 0 {
-                return Err(ConsensusError::Other(
-                    format!("System transaction {} has non-zero gas price: {}", i, system_tx.max_fee_per_gas()).into()
-                ));
-            }
-
-            // Basic validation: system transaction should be sent by beneficiary
-            match system_tx.recover_signer() {
-                Ok(signer) => {
-                    if signer != header.beneficiary {
-                        return Err(ConsensusError::Other(
-                            format!("System transaction {} not sent by beneficiary: signer={}, beneficiary={}", 
-                                    i, signer, header.beneficiary).into()
-                        ));
-                    }
-                }
-                Err(_) => {
-                    return Err(ConsensusError::Other(
-                        format!("Failed to recover signer for system transaction {}", i).into()
-                    ));
-                }
-            }
-        }
-
-        Ok(())
-    }
-
-    /// Validate EIP-4844 blob gas fields for Cancun fork
-    fn validate_cancun_blob_gas(&self, block: &SealedBlock<BscBlock>) -> Result<(), ConsensusError> {
-        // Check that the blob gas used in the header matches the sum of the blob gas used by each
-        // blob tx
-        let header_blob_gas_used = block.blob_gas_used.ok_or(ConsensusError::BlobGasUsedMissing)?;
-        let total_blob_gas = block.blob_gas_used().ok_or(ConsensusError::BlobGasUsedMissing)?;
-        // TODO: please use the following correct line after block.body().blob_gas_used() is callable in scope. It should be usealbe when next reht==th dependency updates
-        // let total_blob_gas = block.body().blob_gas_used().ok_or(ConsensusError::BlobGasUsedMissing)?;
-        if total_blob_gas != header_blob_gas_used {
-            return Err(ConsensusError::BlobGasUsedDiff(GotExpected {
-                got: header_blob_gas_used,
-                expected: total_blob_gas,
-            }));
-        }
-        Ok(())
-    }
-
-    /// Verify block timing constraints for Ramanujan fork
-    fn verify_block_timing(&self, header: &SealedHeader<Header>, _snapshot: &Snapshot) -> Result<(), ConsensusError> {
-        if !self.chain_spec.is_ramanujan_active_at_block(header.number) {
-            return Ok(());
-        }
-
-        // TODO: Implement block timing validation
-        // This would check that block.timestamp >= parent.timestamp + period + backoff_time
-        // For now, we'll skip this validation as it requires parent header access
-        
-        Ok(())
-    }
-
-    /// Verify vote attestation for Plato fork
-    fn verify_vote_attestation(&self, header: &SealedHeader<Header>) -> Result<(), ConsensusError> {
-        if !self.chain_spec.is_plato_active_at_block(header.number) {
-            return Ok(());
-        }
-
-        // TODO: Implement vote attestation verification
-        // This involves parsing and validating BLS signature aggregation
-        // For now, we'll skip this complex validation
-        
-        Ok(())
-    }
-
-    /// Verify turn length at epoch boundaries for Bohr fork
-    fn verify_turn_length(&self, header: &SealedHeader<Header>) -> Result<(), ConsensusError> {
-        if header.number % self.epoch != 0 || !self.chain_spec.is_bohr_active_at_timestamp(header.timestamp) {
-            return Ok(());
-        }
-
-        // TODO: Implement turn length verification
-        // This would parse turn length from header extra data and compare with contract state
-        // For now, we'll skip this validation
-        
-        Ok(())
-    }
-
-    /// Verify receipts root and logs bloom
-    fn verify_receipts_and_logs(&self, header: &alloy_consensus::Header, receipts: &[Receipt]) -> Result<(), ConsensusError> {
-        // Calculate receipts root
-        let receipts_with_bloom = receipts.iter().map(|r| r.with_bloom_ref()).collect::<Vec<_>>();
-        let calculated_receipts_root = proofs::calculate_receipt_root(&receipts_with_bloom);
-
-        if header.receipts_root != calculated_receipts_root {
-            return Err(ConsensusError::Other(
-                format!("Receipts root mismatch: header={}, calculated={}", header.receipts_root, calculated_receipts_root).into()
-            ));
-        }
-
-        // Calculate logs bloom
-        let calculated_logs_bloom = receipts_with_bloom.iter()
-            .fold(alloy_primitives::Bloom::ZERO, |bloom, r| bloom | r.bloom());
-
-        if header.logs_bloom != calculated_logs_bloom {
-            return Err(ConsensusError::Other(
-                format!("Logs bloom mismatch").into()
-            ));
-        }
-
-        Ok(())
-    }
-
-    /// Verify the seal (proposer signature) in the header
-    fn verify_seal(&self, header: &SealedHeader<Header>, snapshot: &Snapshot) -> Result<(), ConsensusError> {
-        // Enhanced seal verification with proper authorization checks
-        let proposer = header.beneficiary;
-
-        // Check if proposer is in the current validator set
-        if !snapshot.validators.contains(&proposer) {
-            return Err(ConsensusError::Other(
-                format!("Unauthorized proposer: {}", proposer).into()
-            ));
-        }
-
-        // Check if proposer signed recently (to prevent spamming)
-        if snapshot.sign_recently(proposer) {
-            return Err(ConsensusError::Other(
-                format!("Proposer {} signed recently", proposer).into()
-            ));
-        }
-
-        // TODO: Implement actual signature recovery and verification
-        // This would involve:
-        // 1. Recovering the proposer address from the signature in header.extra_data
-        // 2. Verifying it matches header.beneficiary
-        // For now, we assume the beneficiary is correct
-
-        Ok(())
-    }
-
-    /// Verify the difficulty based on turn-based proposing
-    fn verify_difficulty(&self, header: &SealedHeader<Header>, snapshot: &Snapshot) -> Result<(), ConsensusError> {
-        // The proposer is the signer of the block, recovered from the seal.
-        // This is the correct identity to use for turn-based validation.
-        let proposer = self
-            .consensus_validator
-            .recover_proposer_from_seal(header)?;
-        
-        let in_turn = snapshot.is_inturn(proposer);
-        let inturn_validator = snapshot.inturn_validator();
-
-        let expected_difficulty = if in_turn { DIFF_INTURN } else { DIFF_NOTURN };
-
-        if header.difficulty != expected_difficulty {
-            tracing::error!(
-                "BSC: Difficulty validation failed at block {}: proposer={}, inturn_validator={}, in_turn={}, expected_difficulty={}, got_difficulty={}, snapshot_block={}, validators={:?}",
-                header.number(),
-                proposer,
-                inturn_validator,
-                in_turn,
-                expected_difficulty,
-                header.difficulty,
-                snapshot.block_number,
-                snapshot.validators
-            );
-            return Err(ConsensusError::Other(
-                format!("Invalid difficulty: expected {}, got {}", expected_difficulty, header.difficulty).into()
-            ));
-        }
-
-        Ok(())
-    }
+#[derive(Debug)]
+pub struct Parlia<ChainSpec> {
+    pub spec: Arc<ChainSpec>,
+    pub epoch: u64, // The epoch number
+    // period: u64, // The period of block proposal
 }
 
-impl<ChainSpec, P> super::ParliaConsensusObject for ParliaConsensus<ChainSpec, P>
-where
-    ChainSpec: EthChainSpec + BscHardforks + 'static,
-    P: SnapshotProvider + std::fmt::Debug + 'static,
+impl<ChainSpec> Parlia<ChainSpec> 
+where ChainSpec: EthChainSpec + BscHardforks + 'static, 
 {
-    fn verify_cascading_fields(
-        &self,
-        header: &Header,
-        parent: &Header,
-        _ancestor: Option<&HashMap<alloy_primitives::B256, SealedHeader<Header>>>,
-        snap: &Snapshot,
-    ) -> Result<(), reth_evm::execute::BlockExecutionError> {
-        let header_hash = alloy_primitives::keccak256(alloy_rlp::encode(header));
-        let parent_hash = alloy_primitives::keccak256(alloy_rlp::encode(parent));
-        let sealed_header = SealedHeader::new(header.clone(), header_hash);
-        let sealed_parent = SealedHeader::new(parent.clone(), parent_hash);
-
-        self.consensus_validator
-            .verify_cascading_fields(&sealed_header, &sealed_parent, None, snap)
-            .map_err(|e| reth_evm::execute::BlockExecutionError::msg(format!("{}", e)))
+    pub fn new(chain_spec: Arc<ChainSpec>, epoch: u64) -> Self {
+        Self { spec: chain_spec, epoch }
     }
 
-    fn get_epoch_length(&self, header: &alloy_consensus::Header) -> u64 {
-        self.get_epoch_length(header)
-    }
-    fn get_validator_bytes_from_header(&self, header: &alloy_consensus::Header) -> Option<Vec<u8>> {
-        self.get_validator_bytes_from_header(header)
+    /// Get chain spec
+    pub fn chain_spec(&self) -> &ChainSpec {
+        &self.spec
     }
 
-    fn get_turn_length_from_header(&self, header: &alloy_consensus::Header) -> Result<Option<u8>, ParliaConsensusError> {
-        self.get_turn_length_from_header(header)
-    }
-}
-
-impl<ChainSpec, P> HeaderValidator<Header> for ParliaConsensus<ChainSpec, P>
-where
-    ChainSpec: EthChainSpec + BscHardforks + 'static,
-    P: SnapshotProvider + std::fmt::Debug + 'static,
-{
-    fn validate_header(&self, header: &SealedHeader<Header>) -> Result<(), ConsensusError> {
-        self.header_validator.validate_header(header)
-    }
-
-    fn validate_header_against_parent(
-        &self,
-        header: &SealedHeader<Header>,
-        parent: &SealedHeader<Header>,
-    ) -> Result<(), ConsensusError> {
-        self.header_validator.validate_header_against_parent(header, parent)
-    }
-}
-
-impl<ChainSpec, P> Consensus<BscBlock> for ParliaConsensus<ChainSpec, P>
-where
-    ChainSpec: EthChainSpec + BscHardforks + 'static,
-    P: SnapshotProvider + std::fmt::Debug + 'static,
-{
-    type Error = ConsensusError;
-
-    fn validate_body_against_header(
-        &self,
-        _body: &<BscBlock as Block>::Body,
-        _header: &SealedHeader<Header>,
-    ) -> Result<(), Self::Error> {
-        // Basic body validation - for now accept all
-        Ok(())
-    }
-
-    fn validate_block_pre_execution(
-        &self,
-        block: &SealedBlock<BscBlock>,
-    ) -> Result<(), Self::Error> {
-        self.validate_block_pre_execution_impl(block)
-    }
-}
-
-impl<ChainSpec, P> FullConsensus<BscPrimitives> for ParliaConsensus<ChainSpec, P>
-where
-    ChainSpec: EthChainSpec + BscHardforks + 'static,
-    P: SnapshotProvider + std::fmt::Debug + 'static,
-{
-    fn validate_block_post_execution(
-        &self,
-        block: &RecoveredBlock<BscBlock>,
-        result: &BlockExecutionResult<Receipt>,
-    ) -> Result<(), ConsensusError> {
-        self.validate_block_post_execution_impl(block, result)
-    }
-}
-
-// Additional BSC validation methods
-impl<ChainSpec, P> ParliaConsensus<ChainSpec, P>
-where
-    ChainSpec: EthChainSpec + BscHardforks + 'static,
-    P: SnapshotProvider + std::fmt::Debug + 'static,
-{
-    /// Get parent header for validation (following bsc-erigon approach)
-    fn get_parent_header(&self, header: &alloy_consensus::Header) -> Option<SealedHeader<alloy_consensus::Header>> {
-        if header.number == 0 {
-            return None; // Genesis has no parent
-        }
-        
-        // TODO: Implement proper parent header fetching like bsc-erigon:
-        // 1. Try to get from provided parents array (for batch validation)
-        // 2. Fallback to chain storage: chain.GetHeader(header.parent_hash, header.number - 1)
-        // 3. Validate parent.number == header.number - 1 && parent.hash == header.parent_hash
-        //
-        // For now, gracefully handle missing parents during sync by returning None.
-        // This defers gas limit validation to live sync when dependencies are available.
-        //
-        // Example implementation:
-        // if let Some(provider) = &self.header_provider {
-        //     if let Ok(Some(parent_header)) = provider.header_by_number(header.number - 1) {
-        //         if parent_header.hash_slow() == header.parent_hash {
-        //             return Some(SealedHeader::new(parent_header, header.parent_hash));
-        //         }
-        //     }
-        // }
-        
-        None
-    }
-
-    /// Verify BSC gas limit validation with Lorentz hardfork support (like bsc-erigon)
-    fn verify_gas_limit(
-        &self,
-        header: &SealedHeader<alloy_consensus::Header>,
-        parent: &SealedHeader<alloy_consensus::Header>,
-    ) -> Result<(), ConsensusError> {
-        let parent_gas_limit = parent.gas_limit();
-        let gas_limit = header.gas_limit();
-        
-        // Calculate absolute difference
-        let diff = if parent_gas_limit > gas_limit {
-            parent_gas_limit - gas_limit
-        } else {
-            gas_limit - parent_gas_limit
-        };
-        
-        // Use Lorentz hardfork activation for divisor (like bsc-erigon)
-        // Before Lorentz: 256, After Lorentz: 1024
-        let gas_limit_bound_divisor = if self.chain_spec.is_lorentz_active_at_timestamp(header.timestamp()) {
-            1024u64 // After Lorentz hardfork
-        } else {
-            256u64  // Before Lorentz hardfork
-        };
-        
-        let limit = parent_gas_limit / gas_limit_bound_divisor;
-        const MIN_GAS_LIMIT: u64 = 5000; // Minimum gas limit for BSC
-        
-        if diff >= limit || gas_limit < MIN_GAS_LIMIT {
-            return Err(ConsensusError::Other(format!(
-                "BSC gas limit validation failed: have {}, want {} ± {}, min={}", 
-                gas_limit, parent_gas_limit, limit, MIN_GAS_LIMIT
-            ).into()));
-        }
-        
-        tracing::trace!(
-            "✅ [BSC] Gas limit validation passed: {} (parent: {}, limit: ±{}, divisor: {})",
-            gas_limit, parent_gas_limit, limit, gas_limit_bound_divisor
-        );
-        
-        Ok(())
-    }
-
-    /// Report slash evidence for validators who fail to propose when it's their turn (like bsc-erigon)
-    fn report_slash_evidence(
-        &self,
-        header: &SealedHeader<alloy_consensus::Header>,
-        snapshot: &Snapshot,
-    ) -> Result<(), ConsensusError> {
-        let proposer = header.beneficiary();
-        let inturn_validator = snapshot.inturn_validator();
-        
-        // Check if the current proposer is not the expected in-turn validator
-        let inturn_validator_eq_miner = proposer == inturn_validator;
-        
-        if !inturn_validator_eq_miner {
-            // Check if the in-turn validator has signed recently
-            let spoiled_validator = inturn_validator;
-            if !snapshot.sign_recently(spoiled_validator) {
-                // Report slashing evidence for the validator who failed to propose in-turn
-                tracing::warn!(
-                    "🔪 [BSC] Slash evidence detected: validator {} failed to propose in-turn at block {}, actual proposer: {}",
-                    spoiled_validator, header.number(), proposer
-                );
-                
-                // TODO: In a full implementation, this would:
-                // 1. Create a system transaction to call the slash contract
-                // 2. Include evidence of the validator's failure to propose
-                // 3. Submit this as part of block execution
-                // For now, we log the evidence for monitoring/debugging
-                
-                tracing::info!(
-                    "📊 [BSC] Slash evidence: block={}, spoiled_validator={}, actual_proposer={}, inturn_expected={}",
-                    header.number(), spoiled_validator, proposer, inturn_validator
-                );
-            }
-        }
-        
-        Ok(())
-    }
-
-    fn get_epoch_length(&self, header: &Header) -> u64 {
-        if self.chain_spec.is_maxwell_active_at_timestamp(header.timestamp()) {
+    /// Get epoch length from header
+    pub fn get_epoch_length(&self, header: &Header) -> u64 {
+        if self.spec.is_maxwell_active_at_timestamp(header.timestamp()) {
             return crate::consensus::parlia::snapshot::MAXWELL_EPOCH_LENGTH;
         }
-        if self.chain_spec.is_lorentz_active_at_timestamp(header.timestamp()) {
+        if self.spec.is_lorentz_active_at_timestamp(header.timestamp()) {
             return crate::consensus::parlia::snapshot::LORENTZ_EPOCH_LENGTH;
         }
         self.epoch
     }
 
-    fn get_validator_bytes_from_header(&self, header: &Header) -> Option<Vec<u8>> {
+    /// Get validator bytes from header extra data
+    pub fn get_validator_bytes_from_header(&self, header: &Header, epoch_length: u64) -> Option<Vec<u8>> {
         let extra_len = header.extra_data.len();
-        if extra_len <= EXTRA_VANITY + EXTRA_SEAL {
+        if extra_len <= EXTRA_VANITY_LEN + EXTRA_SEAL_LEN {
             return None;
         }
 
-        let is_luban_active = self.chain_spec.is_luban_active_at_block(header.number);
-        let is_epoch = header.number % self.get_epoch_length(header) == 0;
+        let is_luban_active = self.spec.is_luban_active_at_block(header.number);
+        let is_epoch = header.number % epoch_length == 0;
 
         if is_luban_active {
             if !is_epoch {
                 return None;
             }
 
-            let count = header.extra_data[EXTRA_VANITY] as usize;
-            let start = EXTRA_VANITY+VALIDATOR_NUMBER_SIZE;
+            let count = header.extra_data[EXTRA_VANITY_LEN] as usize;
+            let start = EXTRA_VANITY_LEN+VALIDATOR_NUMBER_SIZE;
             let end = start + count * VALIDATOR_BYTES_LEN_AFTER_LUBAN;
 
-            let mut extra_min_len = end + EXTRA_SEAL;
-            let is_bohr_active = self.chain_spec.is_bohr_active_at_timestamp(header.timestamp);
+            let mut extra_min_len = end + EXTRA_SEAL_LEN;
+            let is_bohr_active = self.spec.is_bohr_active_at_timestamp(header.timestamp);
             if is_bohr_active {
                 extra_min_len += TURN_LENGTH_SIZE;
             }
@@ -730,35 +92,33 @@ where
             Some(header.extra_data[start..end].to_vec())
         } else {
             if is_epoch &&
-                (extra_len - EXTRA_VANITY - EXTRA_SEAL) %
+                (extra_len - EXTRA_VANITY_LEN - EXTRA_SEAL_LEN) %
                 VALIDATOR_BYTES_LEN_BEFORE_LUBAN !=
                     0
             {
                 return None;
             }
 
-            Some(header.extra_data[EXTRA_VANITY..extra_len - EXTRA_SEAL].to_vec())
+            Some(header.extra_data[EXTRA_VANITY_LEN..extra_len - EXTRA_SEAL_LEN].to_vec())
         }
     }
 
-    pub fn get_turn_length_from_header(
-        &self,
-        header: &Header,
-    ) -> Result<Option<u8>, ParliaConsensusError> {
-        if header.number % self.get_epoch_length(header) != 0 ||
-            !self.chain_spec.is_bohr_active_at_timestamp(header.timestamp)
+    /// Get turn length from header
+    pub fn get_turn_length_from_header(&self, header: &Header, epoch_length: u64) -> Result<Option<u8>, ParliaConsensusError> {
+        if header.number % epoch_length != 0 ||
+            !self.spec.is_bohr_active_at_timestamp(header.timestamp)
         {
             return Ok(None);
         }
 
-        if header.extra_data.len() <= EXTRA_VANITY + EXTRA_SEAL {
+        if header.extra_data.len() <= EXTRA_VANITY_LEN + EXTRA_SEAL_LEN {
             return Err(ParliaConsensusError::InvalidHeaderExtraLen {
                 header_extra_len: header.extra_data.len() as u64,
             });
         }
 
-        let num = header.extra_data[EXTRA_VANITY] as usize;
-        let pos = EXTRA_VANITY + 1 + num * VALIDATOR_BYTES_LEN_AFTER_LUBAN;
+        let num = header.extra_data[EXTRA_VANITY_LEN] as usize;
+        let pos = EXTRA_VANITY_LEN + 1 + num * VALIDATOR_BYTES_LEN_AFTER_LUBAN;
 
         if header.extra_data.len() <= pos {
             return Err(ParliaConsensusError::ExtraInvalidTurnLength);
@@ -768,4 +128,294 @@ where
         Ok(Some(turn_length))
     }
 
-} 
+    /// Get vote attestation from header
+    pub fn get_vote_attestation_from_header(&self, header: &Header, epoch_length: u64) -> Result<Option<VoteAttestation>, ParliaConsensusError> {
+        let extra_len = header.extra_data.len();
+        if extra_len <= EXTRA_VANITY_LEN + EXTRA_SEAL_LEN {
+            return Ok(None);
+        }
+
+        if !self.spec.is_luban_active_at_block(header.number()) {
+            return Ok(None);
+        }
+
+        let mut raw_attestation_data = if header.number() % epoch_length != 0 {
+            &header.extra_data[EXTRA_VANITY_LEN..extra_len - EXTRA_SEAL_LEN]
+        } else {
+            let validator_count =
+                header.extra_data[EXTRA_VANITY_LEN + VALIDATOR_NUMBER_SIZE - 1] as usize;
+            let mut start =
+                EXTRA_VANITY_LEN + VALIDATOR_NUMBER_SIZE + validator_count * VALIDATOR_BYTES_LEN_AFTER_LUBAN;
+            let is_bohr_active = self.spec.is_bohr_active_at_timestamp(header.timestamp);
+            if is_bohr_active {
+                start += TURN_LENGTH_SIZE;
+            }
+            let end = extra_len - EXTRA_SEAL_LEN;
+            if end <= start {
+                return Ok(None)
+            }
+            &header.extra_data[start..end]
+        };
+        if raw_attestation_data.is_empty() {
+            return Ok(None);
+        }
+        tracing::debug!("try debug attestation data, attestation_data_len: {:?}, header_number: {:?}", 
+            raw_attestation_data.len(), header.number());
+
+        Ok(Some(
+            Decodable::decode(&mut raw_attestation_data)
+                .map_err(|_| ParliaConsensusError::ExtraInvalidAttestation)?,
+        ))
+    }
+
+    pub fn recover_proposer(&self, header: &Header) -> Result<Address, ParliaConsensusError> {
+        let hash = header.hash_slow();
+        
+        { // Check cache first
+            let mut cache = RECOVERED_PROPOSER_CACHE.write().unwrap();
+            if let Some(proposer) = cache.get(&hash) {
+                return Ok(*proposer);
+            }
+        }
+
+        let extra_data = &header.extra_data;
+        if extra_data.len() < EXTRA_VANITY_LEN + EXTRA_SEAL_LEN {
+            return Err(ParliaConsensusError::ExtraSignatureMissing);
+        }
+
+        let signature_offset = extra_data.len() - EXTRA_SEAL_LEN;
+        let recovery_byte = extra_data[signature_offset + EXTRA_SEAL_LEN - 1] as i32;
+        let signature_bytes = &extra_data[signature_offset..signature_offset + EXTRA_SEAL_LEN - 1];
+
+        let recovery_id = RecoveryId::try_from(recovery_byte)
+            .map_err(|_| ParliaConsensusError::RecoverECDSAInnerError)?;
+        let signature = RecoverableSignature::from_compact(signature_bytes, recovery_id)
+            .map_err(|_| ParliaConsensusError::RecoverECDSAInnerError)?;
+
+        let message = Message::from_digest_slice(
+                            hash_with_chain_id(header, self.spec.chain().id()).as_slice(),
+        )
+        .map_err(|_| ParliaConsensusError::RecoverECDSAInnerError)?;
+        let public = &SECP256K1
+            .recover_ecdsa(&message, &signature)
+            .map_err(|_| ParliaConsensusError::RecoverECDSAInnerError)?;
+
+        let proposer =
+            Address::from_slice(&alloy_primitives::keccak256(&public.serialize_uncompressed()[1..])[12..]);
+        
+        { // Update cache
+            let mut cache = RECOVERED_PROPOSER_CACHE.write().unwrap();
+            cache.insert(hash, proposer);
+        }
+        
+        Ok(proposer)
+    }
+    
+    pub fn present_timestamp(&self) -> u64 {
+        SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap().as_secs()
+    }
+
+    fn get_validator_len_from_header(
+        &self,
+        header: &Header,
+    ) -> Result<usize, ParliaConsensusError> {
+        if header.number % self.get_epoch_length(header) != 0 {
+            return Ok(0);
+        }
+
+        let extra_len = header.extra_data.len();
+
+        if !self.spec.is_luban_active_at_block(header.number) {
+            return Ok(extra_len - EXTRA_VANITY_LEN - EXTRA_SEAL_LEN);
+        }
+
+        let count = header.extra_data[EXTRA_VANITY_LEN + VALIDATOR_NUMBER_SIZE - 1] as usize;
+        Ok(count * VALIDATOR_BYTES_LEN_AFTER_LUBAN)
+    }
+
+    fn check_header_extra_len(&self, header: &Header) -> Result<(), ParliaConsensusError> {
+        let extra_len = header.extra_data.len();
+        if extra_len < EXTRA_VANITY_LEN {
+            return Err(ParliaConsensusError::ExtraVanityMissing);
+        }
+        if extra_len < EXTRA_VANITY_LEN + EXTRA_SEAL_LEN {
+            return Err(ParliaConsensusError::ExtraSignatureMissing);
+        }
+
+        if header.number % self.get_epoch_length(header) != 0 {
+            return Ok(());
+        }
+
+        if self.spec.is_luban_active_at_block(header.number) {
+            let count = header.extra_data[EXTRA_VANITY_LEN + VALIDATOR_NUMBER_SIZE - 1] as usize;
+            let expect =
+            EXTRA_VANITY_LEN + VALIDATOR_NUMBER_SIZE + EXTRA_SEAL_LEN + count * VALIDATOR_BYTES_LEN_AFTER_LUBAN;
+            if count == 0 || extra_len < expect {
+                tracing::warn!("Invalid header extra len, block_number: {}, extra_len: {}, expect: {}, count: {}, epoch_length: {}", 
+                    header.number, extra_len, expect, count, self.get_epoch_length(header));
+                return Err(ParliaConsensusError::InvalidHeaderExtraLen {
+                    header_extra_len: extra_len as u64,
+                });
+            }
+        } else {
+            let validator_bytes_len = extra_len - EXTRA_VANITY_LEN - EXTRA_SEAL_LEN;
+            if validator_bytes_len / VALIDATOR_BYTES_LEN_BEFORE_LUBAN == 0 ||
+                validator_bytes_len % VALIDATOR_BYTES_LEN_BEFORE_LUBAN != 0
+            {
+                return Err(ParliaConsensusError::InvalidHeaderExtraLen {
+                    header_extra_len: extra_len as u64,
+                });
+            }
+        }
+
+        Ok(())
+    }
+
+    pub fn check_header_extra(&self, header: &Header) -> Result<(), ParliaConsensusError> {
+        self.check_header_extra_len(header)?;
+
+        let is_epoch = header.number % self.get_epoch_length(header) == 0;
+        let validator_bytes_len = self.get_validator_len_from_header(header)?;
+        if (!is_epoch && validator_bytes_len != 0) || (is_epoch && validator_bytes_len == 0) {
+            return Err(ParliaConsensusError::InvalidHeaderExtraValidatorBytesLen {
+                is_epoch,
+                validator_bytes_len,
+            });
+        }
+
+        Ok(())
+    }
+
+    pub fn parse_validators_from_header(
+        &self,
+        header: &Header,
+        epoch_length: u64,
+    ) -> Result<ValidatorsInfo, ParliaConsensusError> {
+        let val_bytes = self.get_validator_bytes_from_header(header, epoch_length).ok_or_else(|| {
+            ParliaConsensusError::InvalidHeaderExtraLen {
+                header_extra_len: header.extra_data.len() as u64,
+            }
+        })?;
+
+        if val_bytes.is_empty() {
+            return Err(ParliaConsensusError::InvalidHeaderExtraValidatorBytesLen {
+                is_epoch: true,
+                validator_bytes_len: 0,
+            })
+        }
+
+        if self.spec.is_luban_active_at_block(header.number) {
+            self.parse_validators_after_luban(&val_bytes)
+        } else {
+            self.parse_validators_before_luban(&val_bytes)
+        }
+    }
+
+    fn parse_validators_after_luban(
+        &self,
+        validator_bytes: &[u8],
+    ) -> Result<ValidatorsInfo, ParliaConsensusError> {
+        let count = validator_bytes.len() / VALIDATOR_BYTES_LEN_AFTER_LUBAN;
+        let mut consensus_addrs = Vec::with_capacity(count);
+        let mut vote_addrs = Vec::with_capacity(count);
+
+        for i in 0..count {
+            let consensus_start = i * VALIDATOR_BYTES_LEN_AFTER_LUBAN;
+            let consensus_end = consensus_start + ADDRESS_LENGTH;
+            let consensus_address =
+                Address::from_slice(&validator_bytes[consensus_start..consensus_end]);
+            consensus_addrs.push(consensus_address);
+
+            let vote_start = consensus_start + ADDRESS_LENGTH;
+            let vote_end = consensus_start + VALIDATOR_BYTES_LEN_AFTER_LUBAN;
+            let vote_address = VoteAddress::from_slice(&validator_bytes[vote_start..vote_end]);
+            vote_addrs.push(vote_address);
+        }
+
+        Ok(ValidatorsInfo { consensus_addrs, vote_addrs: Some(vote_addrs) })
+    }
+
+    fn parse_validators_before_luban(
+        &self,
+        validator_bytes: &[u8],
+    ) -> Result<ValidatorsInfo, ParliaConsensusError> {
+        let count = validator_bytes.len() / VALIDATOR_BYTES_LEN_BEFORE_LUBAN;
+        let mut consensus_addrs = Vec::with_capacity(count);
+
+        for i in 0..count {
+            let start = i * VALIDATOR_BYTES_LEN_BEFORE_LUBAN;
+            let end = start + VALIDATOR_BYTES_LEN_BEFORE_LUBAN;
+            let address = Address::from_slice(&validator_bytes[start..end]);
+            consensus_addrs.push(address);
+        }
+
+        Ok(ValidatorsInfo { consensus_addrs, vote_addrs: None })
+    }
+
+    /// return the back off milliseconds of the validator, 0 if the validator is in turn.
+    pub fn back_off_time(&self, snap: &Snapshot, parent: &Header, header: &Header) -> u64 {
+        let validator = header.beneficiary;
+        if snap.is_inturn(validator) {
+            return 0;
+        }
+
+        let mut delay = BACKOFF_TIME_OF_INITIAL;
+        let is_parent_lorentz = self.spec.is_lorentz_active_at_timestamp(parent.timestamp);
+        if is_parent_lorentz {
+            delay = LORENTZ_BACKOFF_TIME_OF_INITIAL;
+        }
+        let mut validators = snap.validators.clone();
+
+        if self.spec.is_planck_active_at_block(header.number) {
+            let counts = snap.count_recent_proposers();
+            if snap.sign_recently_by_counts(validator, &counts) {
+                // The backOffTime does not matter when a validator has signed recently.
+                return 0;
+            }
+
+            let inturn_addr = snap.inturn_validator();
+            if snap.sign_recently_by_counts(inturn_addr, &counts) {
+                trace!(
+                    "in turn validator({:?}) has recently signed, skip initialBackOffTime",
+                    inturn_addr
+                );
+                delay = 0
+            }
+
+            // Exclude the recently signed validators and inturn validator
+            validators.retain(|addr| {
+                !(snap.sign_recently_by_counts(*addr, &counts) ||
+                    self.spec.is_bohr_active_at_timestamp(header.timestamp) &&
+                        *addr == inturn_addr)
+            });
+        }
+
+        let mut rng = if self.spec.is_bohr_active_at_timestamp(header.timestamp) {
+            let turn_length = snap.turn_length.unwrap_or(DEFAULT_TURN_LENGTH);
+            RngSource::new(header.number as i64 / turn_length as i64)
+        } else {
+            RngSource::new(snap.block_number as i64)
+        };
+
+        let mut back_off_steps: Vec<u64> = (0..validators.len() as u64).collect();
+        back_off_steps.shuffle(&mut rng);
+
+        // get the index of the current validator and its shuffled backoff time.
+        for (idx, val) in validators.iter().enumerate() {
+            if *val == validator {
+                if delay == 0 && is_parent_lorentz {
+                    // If the in-turn validator has signed recently, the expected backoff times are [0, 2, 3, ...].
+                    if back_off_steps[idx] == 0 {
+                        return 0;
+                    }
+                    return LORENTZ_BACKOFF_TIME_OF_INITIAL + (back_off_steps[idx]- 1) * BACKOFF_TIME_OF_WIGGLE
+                }
+                return delay + back_off_steps[idx] * BACKOFF_TIME_OF_WIGGLE
+            }
+        }
+
+        debug!("the validator is not authorized");
+        0
+    }
+
+}

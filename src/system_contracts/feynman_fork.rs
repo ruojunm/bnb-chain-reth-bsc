@@ -34,7 +34,6 @@ impl PartialOrd for ValidatorElectionInfo {
     }
 }
 
-#[allow(dead_code)]
 pub fn get_top_validators_by_voting_power(
     validators: Vec<ValidatorElectionInfo>,
     max_elected_validators: U256,

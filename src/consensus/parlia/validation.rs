@@ -1,259 +1,171 @@
-//! BSC consensus validation logic ported from reth-bsc-trail
-//! 
-//! This module contains the pre-execution and post-execution validation
-//! logic that was missing from our initial implementation.
-
-use super::snapshot::Snapshot;
+use reth::consensus::{HeaderValidator, ConsensusError, Consensus};
+use reth::primitives::SealedHeader;
+use reth_chainspec::{EthChainSpec, EthereumHardforks, EthereumHardfork};
 use crate::hardforks::BscHardforks;
-use alloy_primitives::{Address, B256, U256};
-use alloy_consensus::BlockHeader;
-use reth::consensus::ConsensusError;
-use reth_chainspec::EthChainSpec;
-//use reth_eth_wire::snap;
-use reth_primitives_traits::SealedHeader;
-use std::collections::HashMap;
-use std::sync::Arc;
-use crate::consensus::parlia::util::calculate_millisecond_timestamp;
+use super::Parlia;
+use alloy_consensus::{Header, EMPTY_OMMER_ROOT_HASH};
+use alloy_primitives::B256;
+use reth_primitives::GotExpected;
+use alloy_eips::eip4844::{DATA_GAS_PER_BLOB, MAX_DATA_GAS_PER_BLOCK_DENCUN};
+use crate::BscBlock;
+use reth_primitives_traits::Block;
 
-/// BSC consensus validator that implements the missing pre/post execution logic
-#[derive(Debug, Clone)]
-pub struct BscConsensusValidator<ChainSpec> {
-    chain_spec: Arc<ChainSpec>,
+
+pub const fn validate_header_gas(header: &Header) -> Result<(), ConsensusError> {
+    if header.gas_used > header.gas_limit {
+        return Err(ConsensusError::HeaderGasUsedExceedsGasLimit {
+            gas_used: header.gas_used,
+            gas_limit: header.gas_limit,
+        })
+    }
+    Ok(())
 }
 
-impl<ChainSpec> BscConsensusValidator<ChainSpec>
-where
-    ChainSpec: EthChainSpec + BscHardforks,
-{
-    /// Create a new BSC consensus validator
-    pub fn new(chain_spec: Arc<ChainSpec>) -> Self {
-        Self { chain_spec }
+/// Ensure the EIP-1559 base fee is set if the London hardfork is active.
+#[inline]
+pub fn validate_header_base_fee<ChainSpec: EthereumHardforks>(
+    header: &Header,
+    chain_spec: &ChainSpec,
+) -> Result<(), ConsensusError> {
+    if chain_spec.is_ethereum_fork_active_at_block(EthereumHardfork::London, header.number) &&
+        header.base_fee_per_gas.is_none()
+    {
+        return Err(ConsensusError::BaseFeeMissing)
+    }
+    Ok(())
+}
+
+/// Validate the 4844 header of BSC block.
+/// Compared to Ethereum, BSC block doesn't have `parent_beacon_block_root`.
+pub fn validate_4844_header_of_bsc(header: &SealedHeader) -> Result<(), ConsensusError> {
+    let blob_gas_used = header.blob_gas_used.ok_or(ConsensusError::BlobGasUsedMissing)?;
+    let excess_blob_gas = header.excess_blob_gas.ok_or(ConsensusError::ExcessBlobGasMissing)?;
+
+    if blob_gas_used > MAX_DATA_GAS_PER_BLOCK_DENCUN {
+        return Err(ConsensusError::BlobGasUsedExceedsMaxBlobGasPerBlock {
+            blob_gas_used,
+            max_blob_gas_per_block: MAX_DATA_GAS_PER_BLOCK_DENCUN,
+        })
     }
 
-    /// Verify cascading fields before block execution
-    /// This is the main pre-execution validation entry point
-    pub fn verify_cascading_fields(
-        &self,
-        header: &SealedHeader,
-        parent: &SealedHeader,
-        ancestor: Option<&HashMap<B256, SealedHeader>>,
-        snap: &Snapshot,
-    ) -> Result<(), ConsensusError> {
-        self.verify_block_time_for_ramanujan(snap, header, parent)?;
-        self.verify_vote_attestation(snap, header, parent, ancestor)?;
-        self.verify_seal(snap, header)?;
-        Ok(())
+    if blob_gas_used % DATA_GAS_PER_BLOB != 0 {
+        return Err(ConsensusError::BlobGasUsedNotMultipleOfBlobGasPerBlob {
+            blob_gas_used,
+            blob_gas_per_blob: DATA_GAS_PER_BLOB,
+        })
     }
 
-    /// Verify block time for Ramanujan fork
-    /// After Ramanujan activation, blocks must respect specific timing rules
-    // TODO: refine and fix this function, now bypass backoff time.
-    fn verify_block_time_for_ramanujan(
-        &self,
-        snapshot: &Snapshot,
-        header: &SealedHeader,
-        parent: &SealedHeader,
-    ) -> Result<(), ConsensusError> {
-        if self.chain_spec.is_ramanujan_active_at_block(header.number()) {
-            let block_interval = snapshot.block_interval;
-            let back_off_time = self.calculate_back_off_time(snapshot, header);
-            
-            if calculate_millisecond_timestamp(header) < calculate_millisecond_timestamp(parent) + block_interval + back_off_time {
-                return Err(ConsensusError::Other(format!(
-                    "Block time validation failed for Ramanujan fork: block {} timestamp {} too early, parent_timestamp {}, block_interval {}, backoff_time {}",
-                    header.number(),
-                    calculate_millisecond_timestamp(header),
-                    calculate_millisecond_timestamp(parent),
-                    block_interval,
-                    back_off_time
-                )));
-            }
+    // `excess_blob_gas` must also be a multiple of `DATA_GAS_PER_BLOB`. This will be checked later
+    // (via `calculate_excess_blob_gas`), but it doesn't hurt to catch the problem sooner.
+    if excess_blob_gas % DATA_GAS_PER_BLOB != 0 {
+        return Err(ConsensusError::BlobGasUsedNotMultipleOfBlobGasPerBlob {
+            blob_gas_used: excess_blob_gas,
+            blob_gas_per_blob: DATA_GAS_PER_BLOB,
+        })
+    }
+
+    Ok(())
+}
+
+impl<ChainSpec: EthChainSpec + BscHardforks + std::fmt::Debug + Send + Sync + 'static> HeaderValidator for Parlia<ChainSpec> {
+    fn validate_header(&self, header: &SealedHeader) -> Result<(), ConsensusError> {
+        // Don't waste time checking blocks from the future
+        let present_timestamp = self.present_timestamp();
+        if header.timestamp > present_timestamp {
+            return Err(ConsensusError::TimestampIsInFuture {
+               timestamp: header.timestamp,
+               present_timestamp,
+            });
         }
-        Ok(())
-    }
 
-    /// Calculate back-off time based on validator turn status
-    fn calculate_back_off_time(&self, snapshot: &Snapshot, header: &SealedHeader) -> u64 {
-        let validator = header.beneficiary();
-        let is_inturn = snapshot.inturn_validator() == validator;
+        // Check extra data
+        self.check_header_extra(header).map_err(|e| ConsensusError::Other(format!("Invalid header extra: {}", e)))?;
 
-        if is_inturn {
-            0
-        } else {
-            // Out-of-turn validators must wait longer
-            // TODO: fix this calculation.
-            // https://github.com/bnb-chain/reth-bsc-trail/blob/main/crates/bsc/consensus/src/lib.rs#L293
-            // let turn_length = snapshot.turn_length.unwrap_or(1) as u64;
-            // turn_length * snapshot.block_interval / 2
-            0
+        // Ensure that the mix digest is zero as we don't have fork protection currently
+        // mix_hash is millisecond timestamp after Lorentz/Maxwell.
+        // if header.mix_hash != EMPTY_MIX_HASH {
+        // return Err(ConsensusError::InvalidMixHash);
+        // }
+
+        // Ensure that the block with no uncles
+        if header.ommers_hash != EMPTY_OMMER_ROOT_HASH {
+            return Err(ConsensusError::BodyOmmersHashDiff(
+                GotExpected { got: header.ommers_hash, expected: EMPTY_OMMER_ROOT_HASH }.into(),
+            ));
         }
+
+        validate_header_gas(header)?;
+        validate_header_base_fee(header, &self.spec)?;
+
+        // Ensures that EIP-4844 fields are valid once cancun is active.
+        if self.spec.is_cancun_active_at_timestamp(header.timestamp) {
+            validate_4844_header_of_bsc(header)?;
+        } else if header.blob_gas_used.is_some() {
+            return Err(ConsensusError::BlobGasUsedUnexpected)
+        } else if header.excess_blob_gas.is_some() {
+            return Err(ConsensusError::ExcessBlobGasUnexpected)
+        }
+
+        if self.spec.is_bohr_active_at_timestamp(header.timestamp) {
+           if header.parent_beacon_block_root.is_none() ||
+               header.parent_beacon_block_root.unwrap() != B256::default()
+           {
+               return Err(ConsensusError::ParentBeaconBlockRootUnexpected)
+           }
+        } else if header.parent_beacon_block_root.is_some() {
+           return Err(ConsensusError::ParentBeaconBlockRootUnexpected)
+        }
+
+       Ok(())
     }
 
-    /// Verify vote attestation (currently placeholder - actual BLS verification already implemented)
-    fn verify_vote_attestation(
+    fn validate_header_against_parent(
         &self,
-        _snapshot: &Snapshot,
         _header: &SealedHeader,
         _parent: &SealedHeader,
-        _ancestor: Option<&HashMap<B256, SealedHeader>>,
     ) -> Result<(), ConsensusError> {
-        // Note: Vote attestation verification is already implemented in our header validator
-        // This is a placeholder for any additional vote attestation checks that might be needed
-        Ok(())
+        // is unused.
+        unimplemented!()
     }
-
-    /// Verify ECDSA signature seal
-    /// This checks that the header was signed by the expected validator
-    fn verify_seal(&self, snapshot: &Snapshot, header: &SealedHeader) -> Result<(), ConsensusError> {
-        let proposer = self.recover_proposer_from_seal(header)?;
-        
-        if proposer != header.beneficiary() {
-            return Err(ConsensusError::Other(format!(
-                "Wrong header signer: expected {}, got {}",
-                header.beneficiary(),
-                proposer
-            )));
-        }
-
-        if !snapshot.validators.contains(&proposer) {
-            return Err(ConsensusError::Other(format!(
-                "Signer {} not authorized",
-                proposer
-            )));
-        }
-
-        if snapshot.sign_recently(proposer) {
-            return Err(ConsensusError::Other(format!(
-                "Signer {} over limit",
-                proposer
-            )));
-        }
-
-        // Check difficulty matches validator turn status
-        let is_inturn = snapshot.inturn_validator() == proposer;
-        let expected_difficulty = if is_inturn { 2u64 } else { 1u64 };
-        
-        if header.difficulty() != U256::from(expected_difficulty) {
-            return Err(ConsensusError::Other(format!(
-                "Invalid difficulty: expected {}, got {}, expected_validator={}, actual_validator={} at block {}, snapshot_block={}",
-                expected_difficulty,
-                header.difficulty(),
-                snapshot.inturn_validator(),
-                proposer,
-                header.number(),
-                snapshot.block_number
-            )));
-        }
-
-        Ok(())
-    }
-    
-    /// Recover proposer address from header seal (ECDSA signature recovery)
-    /// Following bsc-erigon's approach exactly
-    pub fn recover_proposer_from_seal(&self, header: &SealedHeader) -> Result<Address, ConsensusError> {
-        use secp256k1::{ecdsa::{RecoverableSignature, RecoveryId}, Message, SECP256K1};
-        // Extract seal from extra data (last 65 bytes) - matching bsc-erigon extraSeal
-        let extra_data = &header.extra_data();
-        if extra_data.len() < 65 {
-            return Err(ConsensusError::Other("Invalid seal: extra data too short".into()));
-        }
-        
-        let signature = &extra_data[extra_data.len() - 65..];
-        // Parse signature: 64 bytes + 1 recovery byte
-        if signature.len() != 65 {
-            return Err(ConsensusError::Other(format!("Invalid signature length: expected 65, got {}", signature.len()).into()));
-        }
-        let sig_bytes = &signature[..64];
-        let recovery_id = signature[64];
-        let recovery_id = RecoveryId::from_i32(recovery_id as i32)
-            .map_err(|_| ConsensusError::Other("Invalid recovery ID".into()))?;
-            
-        let recoverable_sig = RecoverableSignature::from_compact(sig_bytes, recovery_id)
-            .map_err(|_| ConsensusError::Other("Invalid signature format".into()))?;
-        
-        let seal_hash = crate::consensus::parlia::hash_with_chain_id(header, self.chain_spec.chain().id());
-        let message = Message::from_digest(seal_hash.0);
-        // Recover public key and derive address (matching bsc-erigon's crypto.Keccak256)
-        let public_key = SECP256K1.recover_ecdsa(&message, &recoverable_sig)
-            .map_err(|_| ConsensusError::Other("Failed to recover public key".into()))?;
-            
-        // Convert to address: keccak256(pubkey[1:])[12:]
-        use alloy_primitives::keccak256;
-        let public_key_bytes = public_key.serialize_uncompressed();
-        let hash = keccak256(&public_key_bytes[1..]); // Skip 0x04 prefix
-        let address = Address::from_slice(&hash[12..]);
-        
-        Ok(address)
-    }
-    
 }
 
-/// Post-execution validation logic
-impl<ChainSpec> BscConsensusValidator<ChainSpec>
-where
-    ChainSpec: EthChainSpec + BscHardforks,
-{
-    /// Verify validators at epoch boundaries
-    /// This checks that the validator set in the header matches the expected set
-    pub fn verify_validators(
+
+impl<ChainSpec: EthChainSpec + BscHardforks + std::fmt::Debug + Send + Sync + 'static> Consensus<BscBlock> for Parlia<ChainSpec> {
+    type Error = ConsensusError;
+
+    fn validate_body_against_header(
         &self,
-        current_validators: Option<(Vec<Address>, HashMap<Address, super::vote::VoteAddress>)>,
-        header: &SealedHeader,
+        _body: &<BscBlock as Block>::Body,
+        _header: &SealedHeader,
     ) -> Result<(), ConsensusError> {
-        let number = header.number();
-        
-        // Only check at epoch boundaries
-        if number % 200 != 0 {  // BSC epoch is 200 blocks
-            return Ok(());
+        // is unused.
+        unimplemented!()
+    }
+
+    fn validate_block_pre_execution(
+        &self,
+        block: &reth_primitives_traits::SealedBlock<BscBlock>,
+    ) -> Result<(), ConsensusError> {
+        // Check transaction root
+        if let Err(error) = block.ensure_transaction_root_valid() {
+            return Err(ConsensusError::BodyTransactionRootDiff(error.into()));
         }
 
-        let (mut validators, vote_addrs_map) = current_validators
-            .ok_or_else(|| ConsensusError::Other("Invalid current validators data".to_string()))?;
-            
-        validators.sort();
-        
-        // For post-Luban blocks, extract validator bytes from header and compare
-        if self.chain_spec.is_luban_active_at_block(number) {
-            let validator_bytes: Vec<u8> = validators
-                .iter()
-                .flat_map(|v| {
-                    let mut bytes = v.to_vec();
-                    if let Some(vote_addr) = vote_addrs_map.get(v) {
-                        bytes.extend_from_slice(vote_addr.as_ref());
-                    }
-                    bytes
-                })
-                .collect();
-                
-            // Extract expected bytes from header extra data
-            let expected = self.get_validator_bytes_from_header(header)?;
-            
-            if validator_bytes != expected {
-                return Err(ConsensusError::Other(format!(
-                    "Validator set mismatch at block {}",
-                    number
-                )));
+        // EIP-4844: Shard Blob Transactions
+        if self.spec.is_cancun_active_at_timestamp(block.timestamp) {
+            // Check that the blob gas used in the header matches the sum of the blob gas used by
+            // each blob tx
+            let header_blob_gas_used =
+                block.blob_gas_used.ok_or(ConsensusError::BlobGasUsedMissing)?;
+            let total_blob_gas = block.blob_gas_used.ok_or(ConsensusError::BlobGasUsedMissing)?;
+            if total_blob_gas != header_blob_gas_used {
+                return Err(ConsensusError::BlobGasUsedDiff(GotExpected {
+                    got: header_blob_gas_used,
+                    expected: total_blob_gas,
+                }));
             }
         }
-        
+
         Ok(())
     }
-
-
-
-    /// Extract validator bytes from header extra data
-    fn get_validator_bytes_from_header(&self, header: &SealedHeader) -> Result<Vec<u8>, ConsensusError> {
-        let extra_data = header.extra_data();
-        const EXTRA_VANITY_LEN: usize = 32;
-        const EXTRA_SEAL_LEN: usize = 65;
-        
-        if extra_data.len() <= EXTRA_VANITY_LEN + EXTRA_SEAL_LEN {
-            return Ok(Vec::new());
-        }
-        
-        let validator_bytes_len = extra_data.len() - EXTRA_VANITY_LEN - EXTRA_SEAL_LEN;
-        let validator_bytes = extra_data[EXTRA_VANITY_LEN..EXTRA_VANITY_LEN + validator_bytes_len].to_vec();
-        
-        Ok(validator_bytes)
-    }
-} 
+}

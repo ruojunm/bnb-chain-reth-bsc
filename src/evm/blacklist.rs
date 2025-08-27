@@ -1,6 +1,5 @@
 use alloy_primitives::{address, Address};
-use std::collections::HashSet;
-use std::sync::LazyLock;
+use std::{collections::HashSet, sync::LazyLock};
 
 /// Global static blacklist for BSC Nano addresses that are not allowed to participate
 pub static NANO_BLACKLIST: LazyLock<HashSet<Address>> = LazyLock::new(|| {

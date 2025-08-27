@@ -125,8 +125,8 @@ impl SnapshotProvider for DynSnapshotProvider {
         self.inner.insert(snapshot)
     }
     
-    fn get_checkpoint_header(&self, block_number: u64) -> Option<alloy_consensus::Header> {
-        self.inner.get_checkpoint_header(block_number)
+    fn get_header(&self, block_number: u64) -> Option<alloy_consensus::Header> {
+        self.inner.get_header(block_number)
     }
 }
 
@@ -205,19 +205,16 @@ mod tests {
     use crate::chainspec::{bsc_testnet, BscChainSpec};
     use crate::consensus::parlia::provider::EnhancedDbSnapshotProvider;
     use reth_db::test_utils::create_test_rw_db;
-    use reth_provider::test_utils::NoopProvider;
 
 
     #[tokio::test]
     async fn test_snapshot_api() {
         // Build an EnhancedDbSnapshotProvider backed by a temp DB and noop header provider
         let db = create_test_rw_db();
-        let header_provider = Arc::new(NoopProvider::default());
         let chain_spec = Arc::new(BscChainSpec::from(bsc_testnet()));
         let snapshot_provider = Arc::new(EnhancedDbSnapshotProvider::new(
             db.clone(),
             2048,
-            header_provider,
             chain_spec,
         ));
         

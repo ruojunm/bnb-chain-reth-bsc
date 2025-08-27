@@ -2,8 +2,9 @@ use crate::{
     chainspec::BscChainSpec,
     node::{
         engine_api::{
-            builder::BscEngineApiBuilder, payload::BscPayloadTypes,
-            validator::BscEngineValidatorBuilder,
+            builder::BscEngineApiBuilder,
+            payload::BscPayloadTypes,
+            validator::{BscEngineValidatorBuilder, BscPayloadValidatorBuilder},
         },
         primitives::BscPrimitives,
         storage::BscStorage,
@@ -36,8 +37,13 @@ pub mod primitives;
 pub mod storage;
 
 /// Bsc addons configuring RPC types
-pub type BscNodeAddOns<N> =
-    RpcAddOns<N, EthereumEthApiBuilder, BscEngineValidatorBuilder, BscEngineApiBuilder>;
+pub type BscNodeAddOns<N> = RpcAddOns<
+    N,
+    EthereumEthApiBuilder,
+    BscPayloadValidatorBuilder,
+    BscEngineApiBuilder,
+    BscEngineValidatorBuilder,
+>;
 
 /// Type configuration for a regular BSC node.
 #[derive(Debug, Clone)]
@@ -81,7 +87,7 @@ impl BscNode {
             .executor(BscExecutorBuilder::default())
             .payload(BscPayloadServiceBuilder::default())
             .network(BscNetworkBuilder::new(self.engine_handle_rx.clone()))
-            .consensus(BscConsensusBuilder::default())  // 🚀 Uses persistent snapshots!
+            .consensus(BscConsensusBuilder::default())  
     }
 }
 

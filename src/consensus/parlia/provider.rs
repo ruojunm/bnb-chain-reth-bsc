@@ -1,22 +1,20 @@
 use super::snapshot::Snapshot;
 use parking_lot::RwLock;
 use std::sync::Arc;
-use reth_provider::{HeaderProvider, BlockReader};
+
 use crate::chainspec::BscChainSpec;
-use crate::hardforks::BscHardforks;
 
+use crate::consensus::parlia::{Parlia, VoteAddress};
+use crate::node::evm::error::BscBlockExecutionError;
+use alloy_primitives::{Address, B256};
 
-/// Trait for creating snapshots on-demand when parent snapshots are missing
-/// This will be removed in favor of integrating the logic into DbSnapshotProvider
-pub trait OnDemandSnapshotCreator {
-    /// Create a snapshot for the given block by working backwards to find an existing snapshot
-    /// and then building forward
-    fn create_snapshot_on_demand(&self, target_block_number: u64) -> Option<Snapshot>;
+/// Validator information extracted from header
+#[derive(Debug, Clone)]
+pub struct ValidatorsInfo {
+    pub consensus_addrs: Vec<Address>,
+    pub vote_addrs: Option<Vec<VoteAddress>>,
 }
 
-// ---------------------------------------------------------------------------
-// MDBX‐backed snapshot provider with LRU front‐cache
-// ---------------------------------------------------------------------------
 
 use reth_db::{Database, DatabaseError};
 use reth_db::table::{Compress, Decompress};
@@ -32,8 +30,12 @@ pub trait SnapshotProvider: Send + Sync {
     /// Inserts (or replaces) the snapshot in the provider.
     fn insert(&self, snapshot: Snapshot);
     
-    /// Fetches header by block number for checkpoint parsing (like reth-bsc-trail's get_header_by_hash)
-    fn get_checkpoint_header(&self, block_number: u64) -> Option<alloy_consensus::Header>;
+    /// Returns the header for the given `block_number`.
+    fn get_header(&self, block_number: u64) -> Option<alloy_consensus::Header>;
+
+    fn get_header_by_hash(&self, _hash: &B256) -> Option<alloy_consensus::Header> {
+        None
+    }
 }
 
 /// `DbSnapshotProvider` wraps an MDBX database; it keeps a small in-memory LRU to avoid hitting
@@ -50,12 +52,12 @@ pub struct DbSnapshotProvider<DB: Database> {
 
 /// Enhanced version with backward walking capability
 #[derive(Debug)]
-pub struct EnhancedDbSnapshotProvider<DB: Database, Provider> {
+pub struct EnhancedDbSnapshotProvider<DB: Database> {
     base: DbSnapshotProvider<DB>,
-    /// Header provider for backward walking
-    header_provider: Arc<Provider>,
     /// Chain spec for genesis snapshot creation
     chain_spec: Arc<BscChainSpec>,
+    /// Parlia consensus instance
+    parlia: Arc<Parlia<BscChainSpec>>,
 }
 
 impl<DB: Database> DbSnapshotProvider<DB> {
@@ -67,20 +69,17 @@ impl<DB: Database> DbSnapshotProvider<DB> {
     }
 }
 
-impl<DB: Database, Provider> EnhancedDbSnapshotProvider<DB, Provider> 
-where
-    Provider: HeaderProvider<Header = alloy_consensus::Header> + BlockReader + Send + Sync + 'static,
-{
+impl<DB: Database> EnhancedDbSnapshotProvider<DB> {
     pub fn new(
         db: DB, 
         capacity: usize, 
-        header_provider: Arc<Provider>,
         chain_spec: Arc<BscChainSpec>,
     ) -> Self {
+        let parlia = Arc::new(Parlia::new(chain_spec.clone(), 200));
         Self { 
             base: DbSnapshotProvider::new(db, capacity),
-            header_provider,
             chain_spec,
+            parlia,
         }
     }
 }
@@ -92,12 +91,12 @@ impl<DB: Database + Clone> Clone for DbSnapshotProvider<DB> {
     }
 }
 
-impl<DB: Database + Clone, Provider: Clone> Clone for EnhancedDbSnapshotProvider<DB, Provider> {
+impl<DB: Database + Clone> Clone for EnhancedDbSnapshotProvider<DB> {
     fn clone(&self) -> Self {
         Self {
             base: self.base.clone(),
-            header_provider: self.header_provider.clone(),
             chain_spec: self.chain_spec.clone(),
+            parlia: self.parlia.clone(),
         }
     }
 }
@@ -168,9 +167,7 @@ impl<DB: Database + 'static> SnapshotProvider for DbSnapshotProvider<DB> {
     }
 
     fn insert(&self, snapshot: Snapshot) {
-        // update cache
         self.cache.write().insert(snapshot.block_number, snapshot.clone());
-        // Persist only at checkpoint boundaries to reduce I/O.
         if snapshot.block_number % crate::consensus::parlia::snapshot::CHECKPOINT_INTERVAL == 0 {
             match self.persist_to_db(&snapshot) {
                 Ok(()) => {
@@ -183,21 +180,16 @@ impl<DB: Database + 'static> SnapshotProvider for DbSnapshotProvider<DB> {
         }
     }
     
-    fn get_checkpoint_header(&self, _block_number: u64) -> Option<alloy_consensus::Header> {
-        tracing::info!("Get checkpoint header for block {} in DbSnapshotProvider", _block_number);
-        // DbSnapshotProvider doesn't have access to headers
+    fn get_header(&self, _block_number: u64) -> Option<alloy_consensus::Header> {
         unimplemented!("DbSnapshotProvider doesn't have access to headers");
     }
 }
 
 // Simplified version based on reth-bsc-trail's approach - much faster and simpler
-impl<DB: Database + 'static, Provider> SnapshotProvider for EnhancedDbSnapshotProvider<DB, Provider> 
-where
-    Provider: HeaderProvider<Header = alloy_consensus::Header> + BlockReader + Send + Sync + 'static,
+impl<DB: Database + 'static> SnapshotProvider for EnhancedDbSnapshotProvider<DB>
 {
     fn snapshot(&self, block_number: u64) -> Option<Snapshot> {
-        // Early return for cached snapshots to avoid expensive computation
-        {
+        { // fast path query.
             let mut cache_guard = self.base.cache.write();
             if let Some(cached_snap) = cache_guard.get(&block_number) {
                 tracing::debug!("Succeed to query snapshot from cache, request {} -> found snapshot for block {}", block_number, cached_snap.block_number);
@@ -205,16 +197,12 @@ where
             }
         }
         
-        // Cache miss, starting backward walking
-
-        // simple backward walking + proper epoch updates
+        // Cache miss, starting backward walking.
+        // simple backward walking + proper epoch updates.
         let mut current_block = block_number;
         let mut headers_to_apply = Vec::new();
-
-        // 1. Backward walking loop 
         let base_snapshot = loop {
-            // Check cache first (need write lock for LRU get operation)
-            {
+            { // fast path query.
                 let mut cache_guard = self.base.cache.write();
                 if let Some(snap) = cache_guard.get(&current_block) {
                     break snap.clone();
@@ -224,122 +212,127 @@ where
             // Check database at checkpoint intervals (every 1024 blocks)
             if current_block % crate::consensus::parlia::snapshot::CHECKPOINT_INTERVAL == 0 {
                 if let Some(snap) = self.base.load_from_db(current_block) {
-                    tracing::debug!("🔍 [BSC] Found checkpoint snapshot in DB: block {} -> snapshot_block {}", current_block, snap.block_number);
+                    tracing::debug!("Succeed to load snap, block_number: {}, snap_block_number: {}, wanted_block_number: {}", current_block, snap.block_number, block_number);
                     if snap.block_number == current_block {
-                        // Only use the snapshot if it's actually for the requested block
                         self.base.cache.write().insert(current_block, snap.clone());
                         break snap;
                     } else {
-                        tracing::warn!("🚨 [BSC] DB returned wrong snapshot: requested block {} but got snapshot for block {} - this indicates the snapshot hasn't been created yet", current_block, snap.block_number);
+                        tracing::warn!("Returned wrong snapshot: requested block {} but got snapshot for block {} - this indicates the snapshot hasn't been created yet", current_block, snap.block_number);
                         // Don't break here - continue backward walking to find a valid parent snapshot
                     }
                 } else {
-                    tracing::debug!("🔍 [BSC] No checkpoint snapshot found in DB for block {}", current_block);
+                    tracing::debug!("Failed to load snapshot in DB for block {}", current_block);
                 }
             }
 
-            // Genesis handling - create genesis snapshot 
-            if current_block == 0 {
-                tracing::debug!("🚀 [BSC] Creating genesis snapshot for backward walking");
-                if let Ok(genesis_snap) = crate::consensus::parlia::ParliaConsensus::<BscChainSpec, DbSnapshotProvider<DB>>::create_genesis_snapshot(
-                    self.chain_spec.clone(),
-                    crate::consensus::parlia::EPOCH
-                ) {
-                    self.base.cache.write().insert(0, genesis_snap.clone());
-                    break genesis_snap;
-                } else {
-                    tracing::error!("❌ [BSC] Failed to create genesis snapshot");
-                    return None;
-                }
-            }
-
-                            // Collect header for forward application - fail if not available 
-                if let Ok(Some(header)) = self.header_provider.header_by_number(current_block) {
-                    headers_to_apply.push(header);
+            // Collect header for forward application - fail if not available 
+            if let Some(header) = crate::node::evm::util::HEADER_CACHE_READER.lock().unwrap().get_header_by_number(current_block) {
+                    if header.number == 0 {
+                        let ValidatorsInfo { consensus_addrs, vote_addrs } =
+                            self.parlia.parse_validators_from_header(&header, self.parlia.epoch).map_err(|err| {
+                                BscBlockExecutionError::ParliaConsensusInnerError { error: err.into() }
+                            }).ok()?;
+                        let genesis_snap = Snapshot::new(
+                            consensus_addrs,
+                            0, // Genesis block number
+                            header.hash_slow(),
+                            self.parlia.epoch,
+                            vote_addrs,
+                        );
+                        self.base.cache.write().insert(0, genesis_snap.clone());
+                        self.base.persist_to_db(&genesis_snap).ok()?;
+                        tracing::info!("Succeed to persist genesis snapshot for block 0 to DB");
+                        break genesis_snap;
+                    }
+                    headers_to_apply.push(header.clone());
                     current_block = current_block.saturating_sub(1);
                 } else {
-                    // Header not available - this is common during Bodies stage validation
-                    // where headers might not be available in dependency order.
-                    // Fail gracefully to defer validation to Execution stage.
-                    if block_number % 100000 == 0 { // only log every 100k blocks to reduce spam
-                        tracing::debug!("🔄 [BSC] Header {} not available for snapshot creation (block {}), deferring to execution stage", current_block, block_number);
-                    }
+                    tracing::error!("Failed to get snap due to load header in DB for block {}", current_block);
                     return None;
                 }
-        };
+            };
 
-        // 2. Apply headers forward with epoch updates 
-        headers_to_apply.reverse();
-        let mut working_snapshot = base_snapshot;
+            headers_to_apply.reverse();
+            let mut working_snapshot = base_snapshot;
+            tracing::debug!("Start to apply headers to base snapshot, base_snapshot: {:?}, target_snapshot: {}, apply_length: {}", 
+                working_snapshot.block_number, block_number, headers_to_apply.len());
 
-        for (_index, header) in headers_to_apply.iter().enumerate() {
-            // Check for epoch boundary (following reth-bsc-trail pattern)
-            let epoch_remainder = header.number % working_snapshot.epoch_num;
-            let miner_check_len = working_snapshot.miner_history_check_len();
-            let is_epoch_boundary = header.number > 0 && epoch_remainder == miner_check_len;
-            
-            let (new_validators, vote_addrs, turn_length) = if is_epoch_boundary {
-                // Epoch boundary detected
-                
-                // Parse validator set from checkpoint header (miner_check_len blocks back, like reth-bsc-trail)
-                let checkpoint_block_number = header.number - miner_check_len;
-                // Looking for validator updates in checkpoint block
-                
-                // Find the checkpoint header in our headers_to_apply list
-                // Checking available headers for checkpoint parsing
-                
-                let checkpoint_header = headers_to_apply.iter()
-                    .find(|h| h.number == checkpoint_block_number);
-                
-                if let Some(checkpoint_header) = checkpoint_header {
-                    let parsed = super::validator::parse_epoch_update(checkpoint_header, 
-                        self.chain_spec.is_luban_active_at_block(checkpoint_header.number),
-                        self.chain_spec.is_bohr_active_at_timestamp(checkpoint_header.timestamp)
-                    );                    
-                    parsed
+            for (_index, header) in headers_to_apply.iter().enumerate() {
+                let epoch_remainder = header.number % working_snapshot.epoch_num;
+                let miner_check_len = working_snapshot.miner_history_check_len();
+                let is_epoch_boundary = header.number > 0 && epoch_remainder == miner_check_len;
+                let mut turn_length = None;
+                let validators_info = if is_epoch_boundary {
+                    let checkpoint_block_number = header.number - miner_check_len;
+                    tracing::debug!("Try update validator set, checkpoint_block_number: {:?}, block_number: {:?}", checkpoint_block_number, header.number);
+                    let checkpoint_header = headers_to_apply.iter()
+                        .find(|h| h.number == checkpoint_block_number);
+                    
+                    if let Some(checkpoint_header) = checkpoint_header {
+                        let parsed = self.parlia.parse_validators_from_header(checkpoint_header, working_snapshot.epoch_num);
+                        turn_length = self.parlia.get_turn_length_from_header(checkpoint_header, working_snapshot.epoch_num).map_err(|err| {
+                            tracing::error!("Failed to get turn length from checkpoint header, block_number: {}, checkpoint_block_number: {}, epoch_num: {}, error: {:?}", 
+                                header.number, checkpoint_block_number, working_snapshot.epoch_num, err);
+                            err
+                        }).ok()?;
+                        parsed
+                    } else {
+                        match crate::node::evm::util::HEADER_CACHE_READER.lock().unwrap().get_header_by_number(checkpoint_block_number) {
+                            Some(header_ref) => {
+                                let parsed = self.parlia.parse_validators_from_header(&header_ref, working_snapshot.epoch_num);
+                                turn_length = self.parlia.get_turn_length_from_header(&header_ref, working_snapshot.epoch_num).map_err(|err| {
+                                    tracing::error!("Failed to get turn length from cached header, block_number: {}, checkpoint_block_number: {}, epoch_num: {}, error: {:?}", 
+                                        header.number, checkpoint_block_number, working_snapshot.epoch_num, err);
+                                    err
+                                }).ok()?; 
+                                parsed
+                            },
+                            None => {
+                                tracing::warn!("Failed to find checkpoint header for block {} - header not found", checkpoint_block_number);
+                                return None;
+                            }
+                        }
+                    }
                 } else {
-                    tracing::warn!("⚠️ [BSC] Checkpoint header for block {} not found in headers_to_apply list", checkpoint_block_number);
-                    (Vec::new(), None, None)
-                }
-            } else {
-                (Vec::new(), None, None)
-            };
+                    Ok(ValidatorsInfo {
+                        consensus_addrs: Vec::new(),
+                        vote_addrs: None,
+                    })
+                }.ok()?;
 
-            // Parse attestation from header for vote tracking
-            let attestation = super::attestation::parse_vote_attestation_from_header(
-                header,
-                working_snapshot.epoch_num,
-                self.chain_spec.is_luban_active_at_block(header.number),
-                self.chain_spec.is_bohr_active_at_timestamp(header.timestamp)
-            );
+                let new_validators = validators_info.consensus_addrs;
+                let vote_addrs = validators_info.vote_addrs;
+                let attestation = self.parlia.get_vote_attestation_from_header(header, working_snapshot.epoch_num).map_err(|err| {
+                    tracing::error!("Failed to get vote attestation from header, block_number: {}, epoch_num: {}, error: {:?}", 
+                        header.number, working_snapshot.epoch_num, err);
+                    err
+                }).ok()?;
 
-            // Apply header to snapshot (now determines hardfork activation internally)
-            working_snapshot = match working_snapshot.apply(
-                header.beneficiary,
-                header,
-                new_validators,
-                vote_addrs,
-                attestation,
-                turn_length,
-                &*self.chain_spec,
-            ) {
-                Some(snap) => snap,
-                None => {
-                    if header.number % 100000 == 0 { // only log every 100k blocks to reduce spam
-                        tracing::debug!("Failed to apply header {} to snapshot during Bodies stage", header.number);
+                tracing::debug!("Start to apply header to snapshot, block_number: {:?}, turn_length: {:?}", header.number, turn_length);
+                // Apply header to snapshot (now determines hardfork activation internally)
+                working_snapshot = match working_snapshot.apply(
+                    header.beneficiary,
+                    header,
+                    new_validators,
+                    vote_addrs,
+                    attestation,
+                    turn_length,
+                    &*self.chain_spec,
+                ) {
+                    Some(snap) => snap,
+                    None => {
+                        tracing::warn!("Failed to apply header {} to snapshot, snapshot: {:?}", header.number, working_snapshot);
+                        return None;
                     }
-                    return None;
+                };
+
+                self.base.cache.write().insert(working_snapshot.block_number, working_snapshot.clone());
+                if working_snapshot.block_number % crate::consensus::parlia::snapshot::CHECKPOINT_INTERVAL == 0 {
+                    tracing::debug!("Succeed to rebuild snapshot checkpoint for block {} to DB", working_snapshot.block_number);
+                    self.base.insert(working_snapshot.clone());
                 }
-            };
-
-            self.base.cache.write().insert(working_snapshot.block_number, working_snapshot.clone());
-            if working_snapshot.block_number % crate::consensus::parlia::snapshot::CHECKPOINT_INTERVAL == 0 {
-                tracing::debug!("Succeed to rebuild snapshot for block {} to DB", working_snapshot.block_number);
-                self.base.insert(working_snapshot.clone());
             }
-        }
-
-        // Created snapshot via backward walking
+        
         Some(working_snapshot)
     }
 
@@ -347,19 +340,15 @@ where
         self.base.insert(snapshot);
     }
     
-    fn get_checkpoint_header(&self, block_number: u64) -> Option<alloy_consensus::Header> {
-        tracing::info!("Get checkpoint header for block {} in enhanced snapshot provider", block_number);
-        // Use the provider to fetch header from database (like reth-bsc-trail's get_header_by_hash)
-        use reth_provider::HeaderProvider;
-        match self.header_provider.header_by_number(block_number) {
-            Ok(header) => {
-                tracing::info!("Succeed to fetch header{} for block {} in enhanced snapshot provider", header.is_none(),block_number);
-                header
-            },
-            Err(e) => {
-                tracing::error!("Failed to fetch header for block {}: {:?}", block_number, e);
-                None
-            }
-        }
+    fn get_header(&self, block_number: u64) -> Option<alloy_consensus::Header> {
+        let header = crate::node::evm::util::HEADER_CACHE_READER.lock().unwrap().get_header_by_number(block_number);
+        tracing::info!("Succeed to fetch header, is_none: {} for block {} in enhanced snapshot provider", header.is_none(), block_number);
+        header
+    }
+
+    fn get_header_by_hash(&self, block_hash: &B256) -> Option<alloy_consensus::Header> {
+        let header = crate::node::evm::util::HEADER_CACHE_READER.lock().unwrap().get_header_by_hash(block_hash);
+        tracing::info!("Succeed to fetch header, is_none: {} for block {} in enhanced snapshot provider", header.is_none(), block_hash);
+        header
     }
 }

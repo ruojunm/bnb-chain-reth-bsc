@@ -1,4 +1,5 @@
 pub mod error;
+pub mod util;
 
 use crate::{
     evm::{
@@ -89,7 +90,7 @@ where
         contract: Address,
         data: Bytes,
     ) -> Result<ResultAndState<Self::HaltReason>, Self::Error> {
-        let result = self.inner.transact_system_call_with_caller(caller, contract, data)?;
+        let result = self.inner.system_call_one_with_caller(caller, contract, data)?;
         let state = self.finalize();
         Ok(ResultAndState::new(result, state))
     }

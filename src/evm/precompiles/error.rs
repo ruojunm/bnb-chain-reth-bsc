@@ -9,8 +9,8 @@ pub enum BscPrecompileError {
     CometBftApplyBlockFailed,
     /// The cometbft consensus state encoding failed.
     CometBftEncodeConsensusStateFailed,
-     /// The double sign invalid evidence.
-     DoubleSignInvalidEvidence,
+    /// The double sign invalid evidence.
+    DoubleSignInvalidEvidence,
 }
 
 impl From<BscPrecompileError> for PrecompileError {

@@ -27,16 +27,16 @@ pub enum ParliaConsensusError {
         validator_bytes_len: usize,
     },
 
+    /// Error for invalid header extra
+    #[error("invalid header extra")]
+    InvalidHeaderExtra,
+
     /// Error when the header is not in epoch
     #[error("{block_number} is not in epoch")]
     NotInEpoch {
         /// The block number
         block_number: BlockNumber,
     },
-
-    /// Error when encountering a abi decode inner error
-    #[error("abi decode inner error")]
-    ABIDecodeInnerError,
 
     /// Error when encountering a recover ecdsa inner error
     #[error("recover ecdsa inner error")]
@@ -45,4 +45,8 @@ pub enum ParliaConsensusError {
     /// Error when header extra turn is invalid
     #[error("invalid turnLength")]
     ExtraInvalidTurnLength,
+
+    /// Error when header extra attestation is invalid
+    #[error("invalid attestation")]
+    ExtraInvalidAttestation,
 }

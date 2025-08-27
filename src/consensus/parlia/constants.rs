@@ -1,12 +1,9 @@
-//! Parlia/BSC consensus constants for header `extraData` parsing.
-//! Values copied from the Go reference (`parlia.go`).
-
 use alloy_primitives::U256;
 
 /// Fixed 32-byte vanity prefix present in every header.
-pub const EXTRA_VANITY: usize = 32;
+pub const EXTRA_VANITY_LEN: usize = 32;
 /// Fixed 65-byte ECDSA signature suffix (r,s,v).
-pub const EXTRA_SEAL: usize = 65;
+pub const EXTRA_SEAL_LEN: usize = 65;
 /// 1-byte length field preceding validator bytes since Luban.
 pub const VALIDATOR_NUMBER_SIZE: usize = 1;
 /// Size of each validator address (20 bytes) before Luban.
@@ -20,3 +17,10 @@ pub const TURN_LENGTH_SIZE: usize = 1;
 pub const DIFF_INTURN: U256 = U256::from_limbs([2, 0, 0, 0]);
 /// Difficulty for out-of-turn block (when it's not the proposer's turn)
 pub const DIFF_NOTURN: U256 = U256::from_limbs([1, 0, 0, 0]); 
+
+pub const COLLECT_ADDITIONAL_VOTES_REWARD_RATIO: usize = 100;
+
+pub const BACKOFF_TIME_OF_INITIAL: u64 = 1000; // milliseconds
+pub const LORENTZ_BACKOFF_TIME_OF_INITIAL: u64 = 2000; // milliseconds
+pub const DEFAULT_TURN_LENGTH: u8 = 1;
+pub const BACKOFF_TIME_OF_WIGGLE: u64 = 1000; // milliseconds
