@@ -257,7 +257,7 @@ impl<DB: Database + 'static> SnapshotProvider for EnhancedDbSnapshotProvider<DB>
             tracing::debug!("Start to apply headers to base snapshot, base_snapshot: {:?}, target_snapshot: {}, apply_length: {}", 
                 working_snapshot.block_number, block_number, headers_to_apply.len());
 
-            for (_index, header) in headers_to_apply.iter().enumerate() {
+            for header in headers_to_apply.iter() {
                 let epoch_remainder = header.number % working_snapshot.epoch_num;
                 let miner_check_len = working_snapshot.miner_history_check_len();
                 let is_epoch_boundary = header.number > 0 && epoch_remainder == miner_check_len;

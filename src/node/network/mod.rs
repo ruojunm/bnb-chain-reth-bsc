@@ -224,7 +224,7 @@ impl BscNetworkBuilder {
             .block_import(Box::new(BscBlockImport::new(handle)))
             .discovery(discv4)
             .eth_rlpx_handshake(Arc::new(BscHandshake::default()))
-            .add_rlpx_sub_protocol(bsc_protocol::protocol::handler::BscProtocolHandler::default());
+            .add_rlpx_sub_protocol(bsc_protocol::protocol::handler::BscProtocolHandler);
         
         let mut network_config = ctx.build_network_config(network_builder);
         // Ensure our advertised fork ID matches the fork filter we validate against.

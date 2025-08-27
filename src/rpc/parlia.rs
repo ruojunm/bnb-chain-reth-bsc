@@ -148,8 +148,8 @@ impl<P: SnapshotProvider + Send + Sync + 'static> ParliaApiServer for ParliaApiI
         // parlia_getSnapshot called
         
         // Parse hex block number (like BSC API does)
-        let block_num = if block_number.starts_with("0x") {
-            match u64::from_str_radix(&block_number[2..], 16) {
+        let block_num = if let Some(stripped) = block_number.strip_prefix("0x") {
+            match u64::from_str_radix(stripped, 16) {
                 Ok(num) => {
                     // Parsed hex block number
                     num
@@ -160,7 +160,7 @@ impl<P: SnapshotProvider + Send + Sync + 'static> ParliaApiServer for ParliaApiI
                         -32602, 
                         "Invalid block number format", 
                         None::<()>
-                    ).into());
+                    ));
                 }
             }
         } else {
@@ -175,7 +175,7 @@ impl<P: SnapshotProvider + Send + Sync + 'static> ParliaApiServer for ParliaApiI
                         -32602, 
                         "Invalid block number format", 
                         None::<()>
-                    ).into());
+                    ));
                 }
             }
         };
@@ -219,11 +219,13 @@ mod tests {
         ));
         
         // Insert a test snapshot
-        let mut test_snapshot = Snapshot::default();
-        test_snapshot.block_number = 100;
-        test_snapshot.validators = vec![alloy_primitives::Address::random(), alloy_primitives::Address::random()];
-        test_snapshot.epoch_num = 200;
-        test_snapshot.turn_length = Some(1);
+        let test_snapshot = Snapshot {
+            block_number: 100,
+            validators: vec![alloy_primitives::Address::random(), alloy_primitives::Address::random()],
+            epoch_num: 200,
+            turn_length: Some(1),
+            ..Default::default()
+        };
         snapshot_provider.insert(test_snapshot.clone());
 
         let api = ParliaApiImpl::new(snapshot_provider);

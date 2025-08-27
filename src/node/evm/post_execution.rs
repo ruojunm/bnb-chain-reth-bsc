@@ -428,7 +428,7 @@ where
             }
         }
 
-        let quorum = (validators.len() * 2 + 2) / 3; // ceil div
+        let quorum = (validators.len() * 2).div_ceil(3); // ceil div
         if valid_vote_count > quorum {
             let reward =
                 ((valid_vote_count - quorum) * COLLECT_ADDITIONAL_VOTES_REWARD_RATIO) / 100;

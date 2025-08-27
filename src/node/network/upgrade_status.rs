@@ -92,7 +92,7 @@ mod tests {
         let mut slice = raw.as_slice();
         let decoded = UpgradeStatus::decode(&mut slice).expect("should decode");
 
-        assert_eq!(decoded.extension.disable_peer_tx_broadcast, false);
+        assert!(!decoded.extension.disable_peer_tx_broadcast);
         // the slice should be fully consumed
         assert!(slice.is_empty(), "all bytes must be consumed by decoder");
     }

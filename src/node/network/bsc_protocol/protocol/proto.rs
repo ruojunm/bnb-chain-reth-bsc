@@ -27,7 +27,7 @@ impl BscProtoMessage {
     pub fn capability() -> Capability { Capability::new_static(BSC_PROTOCOL_NAME, BSC_PROTOCOL_VERSION as usize) }
 
     /// Returns the protocol for the `bsc` protocol.
-    pub fn protocol() -> Protocol { Protocol::new(Self::capability(), BSC_MESSAGE_COUNT as u8) }
+    pub fn protocol() -> Protocol { Protocol::new(Self::capability(), BSC_MESSAGE_COUNT) }
 }
 
 #[cfg(test)]
@@ -114,7 +114,7 @@ mod tests {
             v.extend_from_slice(&votes_only);
             v
         };
-        let encoded_packet = alloy_rlp::encode(&VotesPacket(votes));
+        let encoded_packet = alloy_rlp::encode(VotesPacket(votes));
         assert_eq!(with_msg_id, encoded_packet);
     }
 }

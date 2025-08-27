@@ -18,7 +18,7 @@ impl Encodable for BscCapPacket {
         
         // Encode as RLP list: [protocol_version, extra]
         // Extra is raw RLP data (like Go's rlp.RawValue), so insert directly
-        let protocol_version_encoded = alloy_rlp::encode(&self.protocol_version);
+        let protocol_version_encoded = alloy_rlp::encode(self.protocol_version);
         
         // Calculate list payload length (protocol_version + raw extra data)
         let payload_length = protocol_version_encoded.len() + self.extra.len();
