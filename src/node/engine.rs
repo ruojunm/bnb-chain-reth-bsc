@@ -261,17 +261,16 @@ where
         let block = BscBlock { header, body };
         
         // Seal the block using Parlia consensus
-        let _signing_key = self.signing_key.as_ref()
+        let signing_key: SigningKey = self.signing_key.clone()
             .ok_or("No signing key available for block sealing")?;
-        
-        // For now, use the default signing function
-        // TODO: Implement proper key-based signing
+
+        // SealBlock init
         let seal_block = SealBlock::new(
             self.snapshot_provider.clone(),
             self.chain_spec.clone(),
-            self.validator_address,
+            signing_key,
         );
-        
+
         match seal_block.seal(block) {
             Ok(sealed_block) => {
                 info!("Successfully mined block {}", sealed_block.number());
