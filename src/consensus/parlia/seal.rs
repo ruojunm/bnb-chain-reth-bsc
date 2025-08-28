@@ -159,7 +159,7 @@ where
             .snapshot(parent.number - 1)
             .ok_or_else(|| ConsensusError::Other("Snapshot not found".into()))?;
 
-        let votes = fetch_vote_by_block_hash(parent.hash_slow());
+        let votes = fetch_vote_by_block_hash(header.parent_hash);
         if votes.len() < snap.validators.len() * 2 / 3 {
             return Err(ConsensusError::Other("Not enough votes".into()));
         }
