@@ -1,6 +1,7 @@
 use super::{
     constants::{DIFF_NOTURN, EXTRA_SEAL_LEN},
-    Snapshot, SnapshotProvider, VoteAddress, VoteAttestation, VoteData, VoteEnvelope,
+    vote_pool::fetch_vote_by_block_hash,
+    Snapshot, SnapshotProvider, VoteAddress, VoteAttestation, VoteData,
     VoteSignature,
 };
 use crate::consensus::parlia::util::encode_header_with_chain_id;
@@ -158,12 +159,10 @@ where
             .snapshot(parent.number - 1)
             .ok_or_else(|| ConsensusError::Other("Snapshot not found".into()))?;
 
-        //TODO
-        // votes := p.VotePool.FetchVoteByBlockHash(parent.Hash())
-        // if len(votes) < cmath.CeilDiv(len(snap.Validators)*2, 3) {
-        //     return nil
-        // }
-        let votes: Vec<VoteEnvelope> = Vec::new();
+        let votes = fetch_vote_by_block_hash(parent.hash_slow());
+        if votes.len() < snap.validators.len() * 2 / 3 {
+            return Err(ConsensusError::Other("Not enough votes".into()));
+        }
 
         let (justified_block_number, justified_block_hash) =
             self.get_justified_number_and_hash(&parent)?;
