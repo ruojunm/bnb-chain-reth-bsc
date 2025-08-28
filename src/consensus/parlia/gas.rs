@@ -35,11 +35,7 @@ pub fn validate_gas_limit(
         return Err("gas_limit below minimum");
     }
 
-    let diff = if parent_gas_limit > gas_limit {
-        parent_gas_limit - gas_limit
-    } else {
-        gas_limit - parent_gas_limit
-    };
+    let diff = parent_gas_limit.abs_diff(gas_limit);
 
     if diff >= delta {
         return Err("gas_limit change exceeds bound");

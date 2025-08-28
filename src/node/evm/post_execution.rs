@@ -361,7 +361,7 @@ where
                 as_ref().
                 unwrap().
                 get_header(target_number)
-                .ok_or_else(|| BlockExecutionError::msg(format!("Header not found for block number: {}", target_number)))?;
+                .ok_or_else(|| BlockExecutionError::msg(format!("Header not found for block number: {target_number}")))?;
             let snap = self.snapshot_provider.
                 as_ref().
                 unwrap().
@@ -428,7 +428,7 @@ where
             }
         }
 
-        let quorum = (validators.len() * 2 + 2) / 3; // ceil div
+        let quorum = (validators.len() * 2).div_ceil(3); // ceil div
         if valid_vote_count > quorum {
             let reward =
                 ((valid_vote_count - quorum) * COLLECT_ADDITIONAL_VOTES_REWARD_RATIO) / 100;

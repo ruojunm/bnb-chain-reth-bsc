@@ -79,7 +79,7 @@ impl<ChainSpec: EthChainSpec + BscHardforks + std::fmt::Debug + Send + Sync + 's
         }
 
         // Check extra data
-        self.check_header_extra(header).map_err(|e| ConsensusError::Other(format!("Invalid header extra: {}", e)))?;
+        self.check_header_extra(header).map_err(|e| ConsensusError::Other(format!("Invalid header extra: {e}")))?;
 
         // Ensure that the mix digest is zero as we don't have fork protection currently
         // mix_hash is millisecond timestamp after Lorentz/Maxwell.

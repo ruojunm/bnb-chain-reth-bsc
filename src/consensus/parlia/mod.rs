@@ -3,9 +3,10 @@ pub mod snapshot;
 pub mod provider;
 pub mod constants;
 pub mod gas;
+pub mod vote_pool;
+pub mod consensus;
 pub mod util;
 pub mod error;
-pub mod consensus;
 pub mod validation;
 pub mod db;
 pub mod seal;
@@ -17,6 +18,7 @@ pub use constants::*;
 pub use error::ParliaConsensusError;
 pub use util::hash_with_chain_id;
 pub use provider::SnapshotProvider;
+pub use vote_pool as votes;
 pub use consensus::Parlia;
 
 /// Epoch length.

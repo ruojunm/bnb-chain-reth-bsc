@@ -160,7 +160,7 @@ impl Snapshot {
                 return None;
             }
         } else {
-            for (_, &v) in &snap.recent_proposers {
+            for &v in snap.recent_proposers.values() {
                 if v == validator {
                     tracing::warn!("Failed to apply block due to over-proposed, validator: {:?}, block_number: {:?}", validator, block_number);
                     return None;
@@ -211,11 +211,11 @@ impl Snapshot {
                 snap.recent_proposers = Default::default();
                 snap.recent_proposers.insert(epoch_key, Address::default());
             } else {
-                let old_limit = (snap.validators.len() / 2 + 1) as usize;
-                let new_limit = (new_validators.len() / 2 + 1) as usize;
+                let old_limit = snap.validators.len() / 2 + 1;
+                let new_limit = new_validators.len() / 2 + 1;
                 if new_limit < old_limit {
                     for i in 0..(old_limit - new_limit) {
-                        snap.recent_proposers.remove(&(block_number as u64 - new_limit as u64 - i as u64));
+                        snap.recent_proposers.remove(&(block_number - new_limit as u64 - i as u64));
                     }
                 }
             }
