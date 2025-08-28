@@ -50,33 +50,6 @@ where
             ));
         }
 
-        // let parent_number = header.number - 1;
-        // let snap = self
-        //     .snapshot_provider
-        //     .snapshot(parent_number)
-        //     .ok_or_else(|| ConsensusError::Other("Snapshot not found".into()))?;
-        //
-        // if !snap.validators.contains(&val) {
-        //     return Err(ConsensusError::Other(format!("Unauthorized validator: {val}")));
-        // }
-        //
-        // if snap.sign_recently(val) {
-        //     tracing::info!("Signed recently, must wait for others");
-        //     return Err(ConsensusError::Other(
-        //         format!("Signed recently, must wait for others, validator: {val}")));
-        // }
-        //
-        // let delay = self.delay_for_ramanujan_fork(&snap, header);
-        // tracing::info!(
-        //     target: "parlia::seal",
-        //     "Sealing block {} (delay {:?}, difficulty {:?})",
-        //     header.number,
-        //     delay,
-        //     header.difficulty
-        // );
-        //
-        // std::thread::sleep(delay);
-
         let mut header = block.header;
         if let Err(e) = self.assemble_vote_attestation_stub(&mut header) {
             tracing::error!(target: "parlia::seal", "Assemble vote attestation failed: {e}");
