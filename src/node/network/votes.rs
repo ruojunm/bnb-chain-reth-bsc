@@ -1,4 +1,4 @@
-use alloy_rlp::{Decodable, Encodable};
+use alloy_rlp::{Decodable, Encodable, RlpDecodable, RlpEncodable};
 use bytes::{BufMut, Bytes};
 
 use crate::consensus::parlia::{vote::VoteEnvelope, votes};
@@ -69,21 +69,45 @@ impl Decodable for BscCapPacket {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VotesPacket(pub Vec<VoteEnvelope>);
 
+/// Wrapper to match Go's RLP of struct{Votes []*VoteEnvelope}
+#[derive(RlpEncodable, RlpDecodable)]
+struct VotesWrapper(Vec<VoteEnvelope>);
+
 impl Encodable for VotesPacket {
     fn encode(&self, out: &mut dyn BufMut) {
-        (BscProtoMessageId::Votes as u8).encode(out);
+        // Message ID is a raw byte followed by bare []VoteEnvelope
+        out.put_u8(BscProtoMessageId::Votes as u8);
         self.0.encode(out);
     }
 }
 
 impl Decodable for VotesPacket {
     fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
-        let message_id = u8::decode(buf)?;
+        // Message ID is a raw byte
+        if buf.is_empty() {
+            return Err(alloy_rlp::Error::InputTooShort);
+        }
+        let message_id = buf[0];
+        *buf = &buf[1..];
         if message_id != (BscProtoMessageId::Votes as u8) {
             return Err(alloy_rlp::Error::Custom("Invalid message ID for VotesPacket"));
         }
-        let votes = Vec::<VoteEnvelope>::decode(buf)?;
-        Ok(Self(votes))
+
+        // First, try the bare []VoteEnvelope encoding (what we emit)
+        let mut inner = *buf;
+        if let Ok(votes) = Vec::<VoteEnvelope>::decode(&mut inner) {
+            *buf = inner;
+            return Ok(Self(votes));
+        }
+
+        // Fallback: accept Go-style wrapper: struct{Votes []*VoteEnvelope}
+        let mut inner = *buf;
+        if let Ok(VotesWrapper(votes)) = VotesWrapper::decode(&mut inner) {
+            *buf = inner;
+            return Ok(Self(votes));
+        }
+
+        Err(alloy_rlp::Error::Custom("Invalid votes payload"))
     }
 }
 
