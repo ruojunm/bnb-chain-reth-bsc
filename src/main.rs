@@ -6,16 +6,38 @@ use reth_bsc::{
     node::{evm::config::BscEvmConfig, BscNode},
 };
 use std::sync::Arc;
+use std::path::PathBuf;
 
 // We use jemalloc for performance reasons
 #[cfg(all(feature = "jemalloc", unix))]
 #[global_allocator]
 static ALLOC: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 
-/// No Additional arguments
-#[derive(Debug, Clone, Copy, Default, Args)]
+/// BSC-specific command line arguments
+#[derive(Debug, Clone, Args)]
 #[non_exhaustive]
-struct NoArgs;
+pub struct BscCliArgs {
+    /// Enable mining
+    #[arg(long = "mining.enabled")]
+    pub mining_enabled: bool,
+
+    /// Auto-generate development keys for mining
+    #[arg(long = "mining.dev")]
+    pub mining_dev: bool,
+
+    /// Private key for mining (hex format, for testing only)
+    /// The validator address will be automatically derived from this key
+    #[arg(long = "mining.private-key")]
+    pub private_key: Option<String>,
+
+    /// Custom genesis file path
+    #[arg(long = "genesis")]
+    pub genesis_file: Option<PathBuf>,
+
+    /// Use development chain with auto-generated validators
+    #[arg(long = "bsc-dev")]
+    pub dev_mode: bool,
+}
 
 fn main() -> eyre::Result<()> {
     reth_cli_util::sigsegv_handler::install();
@@ -25,9 +47,41 @@ fn main() -> eyre::Result<()> {
         std::env::set_var("RUST_BACKTRACE", "1");
     }
 
-    Cli::<BscChainSpecParser, NoArgs>::parse().run_with_components::<BscNode>(
+    Cli::<BscChainSpecParser, BscCliArgs>::parse().run_with_components::<BscNode>(
         |spec| (BscEvmConfig::new(spec.clone()), BscConsensus::new(spec)),
-        async move |builder, _| {
+        async move |builder, args| {
+            // Map CLI args into a global MiningConfig override before launching services
+            {
+                use reth_bsc::node::mining_config::{self, MiningConfig};
+
+                let mut mining_config: MiningConfig = if args.mining_dev {
+                    // Dev mode: generate ephemeral keys
+                    MiningConfig::development()
+                } else {
+                    // Start from env, then apply CLI toggles
+                    MiningConfig::from_env()
+                };
+
+                if args.mining_enabled {
+                    mining_config.enabled = true;
+                }
+
+                if let Some(ref pk_hex) = args.private_key {
+                    mining_config.private_key_hex = Some(pk_hex.clone());
+                    // Derive validator address from provided key
+                    if let Ok(sk) = mining_config::keystore::load_private_key_from_hex(pk_hex) {
+                        let addr = mining_config::keystore::get_validator_address(&sk);
+                        mining_config.validator_address = Some(addr);
+                    }
+                }
+
+                // Ensure keys are available if enabled but none provided
+                mining_config = mining_config.ensure_keys_available();
+
+                // Best-effort set; ignore error if already set
+                let _ = mining_config::set_global_mining_config(mining_config);
+            }
+
             let (node, engine_handle_tx) = BscNode::new();
             let NodeHandle { node, node_exit_future: exit_future } =
                 builder.node(node)

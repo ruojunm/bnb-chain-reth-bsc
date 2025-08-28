@@ -22,7 +22,7 @@ use super::{
     BACKOFF_TIME_OF_INITIAL, BACKOFF_TIME_OF_WIGGLE, DEFAULT_TURN_LENGTH,LORENTZ_BACKOFF_TIME_OF_INITIAL,
 };
 use crate::consensus::parlia::go_rng::{RngSource, Shuffle};
-use tracing::{trace, debug};
+use tracing::{trace, debug, warn};
 
 const RECOVERED_PROPOSER_CACHE_NUM: usize = 4096;
 const ADDRESS_LENGTH: usize = 20; // Ethereum address length in bytes
@@ -416,6 +416,46 @@ where ChainSpec: EthChainSpec + BscHardforks + 'static,
 
         debug!("the validator is not authorized");
         0
+    }
+
+    /// Compute the final mining delay (milliseconds) following Parlia's scheduling rules.
+    /// This mirrors the logic of the Geth implementation's Delay function.
+    ///
+    /// - `snap.block_interval` is used as the period (milliseconds).
+    /// - Applies `left_over_ms` reservation for finalization work.
+    /// - Caps blocking time to half the period when last block in one turn (or tl == 1),
+    ///   otherwise 4/5 of the period.
+    pub fn compute_delay_with_backoff(
+        &self,
+        snap: &Snapshot,
+        parent: &Header,
+        header: &Header,
+        left_over_ms: u64,
+    ) -> u64 {
+        let period_ms = snap.block_interval;
+        let mut delay_ms = self.back_off_time(snap, parent, header);
+
+        if left_over_ms >= period_ms {
+            warn!("Delay invalid argument: left_over_ms={}, period_ms={}", left_over_ms, period_ms);
+        } else if left_over_ms >= delay_ms {
+            delay_ms = 0;
+        } else {
+            delay_ms -= left_over_ms;
+        }
+
+        // The blocking time should be no more than half of period when turn_length == 1
+        // or when this is the last block in one turn; otherwise 4/5 of the period.
+        let _tl = u64::from(snap.turn_length.unwrap_or(DEFAULT_TURN_LENGTH));
+        let mut time_for_mining_ms = period_ms / 2;
+        let last_block_in_turn = snap.last_block_in_one_turn(header.number);
+        if !last_block_in_turn {
+            time_for_mining_ms = period_ms * 4 / 5;
+        }
+        if delay_ms > time_for_mining_ms {
+            delay_ms = time_for_mining_ms;
+        }
+
+        delay_ms
     }
 
 }

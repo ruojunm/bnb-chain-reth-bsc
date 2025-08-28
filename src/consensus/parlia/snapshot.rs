@@ -303,6 +303,14 @@ impl Snapshot {
         self.validators.iter().position(|&v| v == validator)
     }
 
+    /// Returns true if `block_number` is the last block of the current turn window.
+    /// When turn_length is 1 (pre-Bohr), every block is considered last in turn.
+    pub fn last_block_in_one_turn(&self, block_number: u64) -> bool {
+        let tl = u64::from(self.turn_length.unwrap_or(DEFAULT_TURN_LENGTH));
+        if tl <= 1 { return true; }
+        block_number % tl == tl - 1
+    }
+
     /// Count how many times each validator has signed in the recent window.
     pub fn count_recent_proposers(&self) -> HashMap<Address, u8> {
         let left_bound = if self.block_number > self.miner_history_check_len() {
