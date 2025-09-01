@@ -238,7 +238,7 @@ impl Snapshot {
             snap.validators = new_validators;
             snap.validators_map = validators_map;
         }
-        tracing::debug!("Succeed to apply snapshot, block_number: {:?}, original_snap: {:?}, new_snap: {:?}", block_number, original_snap, snap);
+        tracing::trace!("Succeed to apply snapshot, block_number: {:?}, original_snap: {:?}, new_snap: {:?}", block_number, original_snap, snap);
         Some(snap)
     }
 

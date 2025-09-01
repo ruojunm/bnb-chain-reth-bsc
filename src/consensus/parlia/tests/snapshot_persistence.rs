@@ -8,12 +8,13 @@ use super::super::{
 use alloy_primitives::{Address, B256};
 use reth_db::{init_db, mdbx::DatabaseArguments, Database, transaction::DbTx, cursor::DbCursorRO};
 use std::sync::Arc;
+use uuid::Uuid;
 
 /// Test snapshot database persistence and retrieval functionality
 #[test]
 fn test_snapshot_database_persistence() -> eyre::Result<()> {
     // Initialize test database
-    let db_path = std::env::temp_dir().join(format!("bsc_test_db_{}", uuid::Uuid::new_v4()));
+    let db_path = std::env::temp_dir().join(format!("bsc_test_db_{}", Uuid::new_v4()));
     std::fs::create_dir_all(&db_path)?;
     
     let database = Arc::new(init_db(&db_path, DatabaseArguments::new(Default::default()))?);
@@ -28,16 +29,18 @@ fn test_snapshot_database_persistence() -> eyre::Result<()> {
     let mut test_snapshots = Vec::new();
     for i in 0..5 {
         let block_number = (i + 1) * 1024; // Checkpoint intervals
-        let mut snapshot = Snapshot::default();
-        snapshot.block_number = block_number;
-        snapshot.block_hash = B256::random();
-        snapshot.validators = vec![
-            Address::random(),
-            Address::random(), 
-            Address::random(),
-        ];
-        snapshot.epoch_num = 200;
-        snapshot.turn_length = Some(1);
+        let snapshot = Snapshot {
+            block_number,
+            block_hash: B256::random(),
+            validators: vec![
+                Address::random(),
+                Address::random(), 
+                Address::random(),
+            ],
+            epoch_num: 200,
+            turn_length: Some(1),
+            ..Default::default()
+        };
         
         test_snapshots.push(snapshot);
     }
@@ -50,7 +53,7 @@ fn test_snapshot_database_persistence() -> eyre::Result<()> {
     // Verify snapshots can be retrieved
     for expected in &test_snapshots {
         let retrieved = provider.snapshot(expected.block_number)
-            .expect(&format!("Snapshot at block {} should exist", expected.block_number));
+            .unwrap_or_else(|| panic!("Snapshot at block {} should exist", expected.block_number));
         
         assert_eq!(retrieved.block_number, expected.block_number);
         assert_eq!(retrieved.block_hash, expected.block_hash);
@@ -65,7 +68,7 @@ fn test_snapshot_database_persistence() -> eyre::Result<()> {
 /// Test range queries (finding nearest snapshots)
 #[test]
 fn test_snapshot_range_queries() -> eyre::Result<()> {
-    let db_path = std::env::temp_dir().join(format!("bsc_test_db_{}", uuid::Uuid::new_v4()));
+    let db_path = std::env::temp_dir().join(format!("bsc_test_db_{}", Uuid::new_v4()));
     std::fs::create_dir_all(&db_path)?;
     
     let database = Arc::new(init_db(&db_path, DatabaseArguments::new(Default::default()))?);
@@ -76,11 +79,13 @@ fn test_snapshot_range_queries() -> eyre::Result<()> {
     // Insert snapshots at blocks 1024, 2048, 3072, 4096, 5120
     for i in 1..=5 {
         let block_number = i * 1024;
-        let mut snapshot = Snapshot::default();
-        snapshot.block_number = block_number;
-        snapshot.block_hash = B256::random();
-        snapshot.validators = vec![Address::random(); 3];
-        snapshot.epoch_num = 200;
+        let snapshot = Snapshot {
+            block_number,
+            block_hash: B256::random(),
+            validators: vec![Address::random(); 3],
+            epoch_num: 200,
+            ..Default::default()
+        };
         
         provider.insert(snapshot);
     }
@@ -101,15 +106,15 @@ fn test_snapshot_range_queries() -> eyre::Result<()> {
         let result = provider.snapshot(query_block);
         match expected_block {
             Some(expected) => {
-                let snapshot = result.expect(&format!("Should find snapshot for block {}", query_block));
+                let snapshot = result.unwrap_or_else(|| panic!("Should find snapshot for block {query_block}"));
                 assert_eq!(snapshot.block_number, expected,
-                    "Query for block {} should return snapshot at block {}, got {}", 
-                    query_block, expected, snapshot.block_number);
+                    "Query for block {query_block} should return snapshot at block {expected}, got {}", 
+                    snapshot.block_number);
             }
             None => {
                 assert!(result.is_none(), 
-                    "Query for block {} should return None, got snapshot at block {}", 
-                    query_block, result.map(|s| s.block_number).unwrap_or(0));
+                    "Query for block {query_block} should return None, got snapshot at block {}", 
+                    result.map(|s| s.block_number).unwrap_or(0));
             }
         }
     }
@@ -120,7 +125,7 @@ fn test_snapshot_range_queries() -> eyre::Result<()> {
 /// Test direct database table access
 #[test]
 fn test_direct_database_access() -> eyre::Result<()> {
-    let db_path = std::env::temp_dir().join(format!("bsc_test_db_{}", uuid::Uuid::new_v4()));
+    let db_path = std::env::temp_dir().join(format!("bsc_test_db_{}", Uuid::new_v4()));
     std::fs::create_dir_all(&db_path)?;
     
     let database = Arc::new(init_db(&db_path, DatabaseArguments::new(Default::default()))?);
@@ -132,11 +137,13 @@ fn test_direct_database_access() -> eyre::Result<()> {
     let snapshot_count = 3;
     for i in 1..=snapshot_count {
         let block_number = i * 1024;
-        let mut snapshot = Snapshot::default();
-        snapshot.block_number = block_number;
-        snapshot.block_hash = B256::random();
-        snapshot.validators = vec![Address::random(); 3];
-        snapshot.epoch_num = 200;
+        let snapshot = Snapshot {
+            block_number,
+            block_hash: B256::random(),
+            validators: vec![Address::random(); 3],
+            epoch_num: 200,
+            ..Default::default()
+        };
         
         provider.insert(snapshot);
     }
@@ -152,8 +159,7 @@ fn test_direct_database_access() -> eyre::Result<()> {
     }
     
     assert_eq!(count, snapshot_count, 
-        "Database should contain {} snapshot entries, found {}", 
-        snapshot_count, count);
+        "Database should contain {snapshot_count} snapshot entries, found {count}");
     
     Ok(())
 }
@@ -161,7 +167,7 @@ fn test_direct_database_access() -> eyre::Result<()> {
 /// Test snapshot provider cache behavior
 #[test]
 fn test_snapshot_cache_behavior() -> eyre::Result<()> {
-    let db_path = std::env::temp_dir().join(format!("bsc_test_db_{}", uuid::Uuid::new_v4()));
+    let db_path = std::env::temp_dir().join(format!("bsc_test_db_{}", Uuid::new_v4()));
     std::fs::create_dir_all(&db_path)?;
     
     let database = Arc::new(init_db(&db_path, DatabaseArguments::new(Default::default()))?);
@@ -173,11 +179,13 @@ fn test_snapshot_cache_behavior() -> eyre::Result<()> {
     // Insert more snapshots than cache size
     for i in 1..=5 {
         let block_number = i * 1024;
-        let mut snapshot = Snapshot::default();
-        snapshot.block_number = block_number;
-        snapshot.block_hash = B256::random();
-        snapshot.validators = vec![Address::random(); 3];
-        snapshot.epoch_num = 200;
+        let snapshot = Snapshot {
+            block_number,
+            block_hash: B256::random(),
+            validators: vec![Address::random(); 3],
+            epoch_num: 200,
+            ..Default::default()
+        };
         
         provider.insert(snapshot);
     }
@@ -186,7 +194,7 @@ fn test_snapshot_cache_behavior() -> eyre::Result<()> {
     for i in 1..=5 {
         let block_number = i * 1024;
         let snapshot = provider.snapshot(block_number)
-            .expect(&format!("Snapshot at block {} should be retrievable", block_number));
+            .unwrap_or_else(|| panic!("Snapshot at block {block_number} should be retrievable"));
         assert_eq!(snapshot.block_number, block_number);
     }
     
