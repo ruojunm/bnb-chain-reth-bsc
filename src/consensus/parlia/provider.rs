@@ -280,7 +280,7 @@ impl<DB: Database + 'static> EnhancedDbSnapshotProvider<DB> {
         let mut working_snapshot = base_snapshot;
         let mut current_block = working_snapshot.block_number + 1;
         
-        tracing::info!("Starting incremental snapshot build from block {} to {}", working_snapshot.block_number, target_block);
+        tracing::debug!("Starting incremental snapshot build from block {} to {}", working_snapshot.block_number, target_block);
         
         while current_block <= target_block {
             let chunk_end = std::cmp::min(current_block + CHUNK_SIZE - 1, target_block);
@@ -296,7 +296,7 @@ impl<DB: Database + 'static> EnhancedDbSnapshotProvider<DB> {
                 }
             }
             
-            tracing::debug!("Processing chunk: blocks {} to {} ({} headers)", current_block, chunk_end, headers_chunk.len());
+            tracing::trace!("Processing chunk: blocks {} to {} ({} headers)", current_block, chunk_end, headers_chunk.len());
             
             // Apply headers in this chunk
             for header in headers_chunk.iter() {
@@ -368,11 +368,6 @@ impl<DB: Database + 'static> EnhancedDbSnapshotProvider<DB> {
                 let mem_info = Self::get_memory_usage();
                 tracing::info!("Incremental rebuild progress: {} / {} blocks completed, Memory: RSS={}MB VSZ={}MB", 
                     current_block - 1, target_block, mem_info.0, mem_info.1);
-                
-                // Warn if memory usage is getting high (>16GB RSS)
-                if mem_info.0 > 16384 {
-                    tracing::warn!("High memory usage detected: {}MB RSS. Consider restarting if OOM occurs.", mem_info.0);
-                }
             }
         }
         

@@ -36,7 +36,6 @@ lazy_static! {
 pub struct Parlia<ChainSpec> {
     pub spec: Arc<ChainSpec>,
     pub epoch: u64, // The epoch number
-    // period: u64, // The period of block proposal
 }
 
 impl<ChainSpec> Parlia<ChainSpec> 
