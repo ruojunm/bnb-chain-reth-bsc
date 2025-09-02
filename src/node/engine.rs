@@ -24,6 +24,8 @@ use tokio::time::interval;
 use tracing::{info, warn, error, debug};
 use crate::consensus::parlia::util::calculate_millisecond_timestamp;
 use k256::ecdsa::SigningKey;
+use reth::transaction_pool::PoolTransaction;
+use reth_primitives_traits::SignedTransaction;
 
 /// Built payload for BSC. This is similar to [`EthBuiltPayload`] but without sidecars as those
 /// included into [`BscBlock`].
@@ -310,7 +312,7 @@ where
         &self,
         header: &alloy_consensus::Header,
     ) -> Result<Vec<TransactionSigned>, Box<dyn std::error::Error + Send + Sync>> {
-        let transactions = Vec::new();
+        let mut transactions: Vec<TransactionSigned> = Vec::new();
         let mut gas_used = 0u64;
         let gas_limit = header.gas_limit();
         
@@ -319,13 +321,18 @@ where
         
         // Collect transactions until we hit gas limit
         for pooled_tx in best_txs {
-            let tx = &pooled_tx.transaction;
+            let recovered = pooled_tx.to_consensus();
+            let tx = recovered.as_ref();
             if gas_used + tx.gas_limit() > gas_limit {
                 break;
             }
             gas_used += tx.gas_limit();
-            // For now, skip transaction collection - focus on core mining logic
-            // TODO: Implement proper transaction cloning based on transaction type
+
+            // let (tx, rlp) = recovered.into_parts();
+            // tx.tx_hash();
+            // TransactionSigned::new_unchecked(tx, rlp);
+            // let signed_tx: TransactionSigned = recovered.into_inner();
+            // transactions.push(signed_tx);
         }
         
         debug!("Collected {} transactions for block, gas used: {}", transactions.len(), gas_used);
