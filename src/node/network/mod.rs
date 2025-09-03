@@ -195,7 +195,17 @@ impl BscNetworkBuilder {
         let (to_import, from_network) = mpsc::unbounded_channel();
         let (to_network, import_outcome) = mpsc::unbounded_channel();
 
-        let handle = ImportHandle::new(to_import, import_outcome);
+        let handle = ImportHandle::new(to_import.clone(), import_outcome);
+        
+        // Create a separate import handle for mining service P2P broadcasting
+        let mining_import_handle = ImportHandle::new(to_import, mpsc::unbounded_channel().1);
+        
+        // Store the mining import handle in shared state for P2P broadcasting
+        if let Err(_) = crate::shared::set_import_handle(mining_import_handle) {
+            tracing::warn!("Failed to set import handle in shared state");
+        } else {
+            tracing::info!("✅ Import handle stored in shared state for P2P broadcasting");
+        }
         
         // Import the necessary types for consensus
         use crate::consensus::ParliaConsensus;
@@ -213,6 +223,13 @@ impl BscNetworkBuilder {
                 .expect("node should only be launched once")
                 .await
                 .unwrap();
+
+            // Store the engine handle in shared state for mining service
+            if let Err(_) = crate::shared::set_engine_handle(handle.clone()) {
+                tracing::warn!("Failed to set engine handle in shared state");
+            } else {
+                tracing::info!("✅ Engine handle stored in shared state for mining service");
+            }
 
             ImportService::new(consensus, handle, from_network, to_network).await.unwrap();
         });

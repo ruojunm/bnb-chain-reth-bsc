@@ -160,10 +160,15 @@ impl Snapshot {
                 return None;
             }
         } else {
-            for &v in snap.recent_proposers.values() {
-                if v == validator {
-                    tracing::warn!("Failed to apply block due to over-proposed, validator: {:?}, block_number: {:?}", validator, block_number);
-                    return None;
+            // For single validator development, allow consecutive blocks
+            if snap.validators.len() == 1 {
+                tracing::debug!("Single validator detected, allowing consecutive blocks for local development");
+            } else {
+                for &v in snap.recent_proposers.values() {
+                    if v == validator {
+                        tracing::warn!("Failed to apply block due to over-proposed, validator: {:?}, block_number: {:?}", validator, block_number);
+                        return None;
+                    }
                 }
             }
         }

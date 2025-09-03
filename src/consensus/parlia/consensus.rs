@@ -65,15 +65,23 @@ where ChainSpec: EthChainSpec + BscHardforks + 'static,
     /// Get validator bytes from header extra data
     pub fn get_validator_bytes_from_header(&self, header: &Header, epoch_length: u64) -> Option<Vec<u8>> {
         let extra_len = header.extra_data.len();
+        tracing::info!("🔧 [DEBUG] get_validator_bytes: extra_len={}, block_number={}, epoch_length={}", 
+            extra_len, header.number, epoch_length);
+        
         if extra_len <= EXTRA_VANITY_LEN + EXTRA_SEAL_LEN {
+            tracing::error!("🔧 [DEBUG] Failed: extra_len ({}) <= EXTRA_VANITY_LEN + EXTRA_SEAL_LEN ({})", 
+                extra_len, EXTRA_VANITY_LEN + EXTRA_SEAL_LEN);
             return None;
         }
 
         let is_luban_active = self.spec.is_luban_active_at_block(header.number);
         let is_epoch = header.number % epoch_length == 0;
+        tracing::info!("🔧 [DEBUG] is_luban_active={}, is_epoch={}", is_luban_active, is_epoch);
 
         if is_luban_active {
+            tracing::info!("🔧 [DEBUG] Taking Luban path");
             if !is_epoch {
+                tracing::error!("🔧 [DEBUG] Luban: Failed !is_epoch");
                 return None;
             }
 
@@ -86,20 +94,33 @@ where ChainSpec: EthChainSpec + BscHardforks + 'static,
             if is_bohr_active {
                 extra_min_len += TURN_LENGTH_SIZE;
             }
+            tracing::info!("🔧 [DEBUG] Luban: count={}, start={}, end={}, extra_min_len={}, is_bohr_active={}", 
+                count, start, end, extra_min_len, is_bohr_active);
+                
             if count == 0 || extra_len < extra_min_len {
+                tracing::error!("🔧 [DEBUG] Luban: Failed count==0 ({}) || extra_len < extra_min_len ({} < {})", 
+                    count == 0, extra_len, extra_min_len);
                 return None
             }
             Some(header.extra_data[start..end].to_vec())
         } else {
-            if is_epoch &&
-                (extra_len - EXTRA_VANITY_LEN - EXTRA_SEAL_LEN) %
-                VALIDATOR_BYTES_LEN_BEFORE_LUBAN !=
-                    0
-            {
-                return None;
+            tracing::info!("🔧 [DEBUG] Taking pre-Luban path");
+            if is_epoch {
+                let validator_bytes_len = extra_len - EXTRA_VANITY_LEN - EXTRA_SEAL_LEN;
+                let remainder = validator_bytes_len % VALIDATOR_BYTES_LEN_BEFORE_LUBAN;
+                tracing::info!("🔧 [DEBUG] Pre-Luban: validator_bytes_len={}, remainder={}", 
+                    validator_bytes_len, remainder);
+                    
+                if remainder != 0 {
+                    tracing::error!("🔧 [DEBUG] Pre-Luban: Failed validator_bytes_len % VALIDATOR_BYTES_LEN_BEFORE_LUBAN != 0 ({} % {} = {})", 
+                        validator_bytes_len, VALIDATOR_BYTES_LEN_BEFORE_LUBAN, remainder);
+                    return None;
+                }
             }
 
-            Some(header.extra_data[EXTRA_VANITY_LEN..extra_len - EXTRA_SEAL_LEN].to_vec())
+            let result = header.extra_data[EXTRA_VANITY_LEN..extra_len - EXTRA_SEAL_LEN].to_vec();
+            tracing::info!("🔧 [DEBUG] Pre-Luban: Success! Extracted {} validator bytes", result.len());
+            Some(result)
         }
     }
 
@@ -235,37 +256,66 @@ where ChainSpec: EthChainSpec + BscHardforks + 'static,
 
     fn check_header_extra_len(&self, header: &Header) -> Result<(), ParliaConsensusError> {
         let extra_len = header.extra_data.len();
+        tracing::info!("🔧 [DEBUG] check_header_extra_len: extra_len={}, block_number={}", extra_len, header.number);
+        
         if extra_len < EXTRA_VANITY_LEN {
+            tracing::error!("🔧 [DEBUG] Failed: extra_len ({}) < EXTRA_VANITY_LEN ({})", extra_len, EXTRA_VANITY_LEN);
             return Err(ParliaConsensusError::ExtraVanityMissing);
         }
         if extra_len < EXTRA_VANITY_LEN + EXTRA_SEAL_LEN {
+            tracing::error!("🔧 [DEBUG] Failed: extra_len ({}) < EXTRA_VANITY_LEN + EXTRA_SEAL_LEN ({})", 
+                extra_len, EXTRA_VANITY_LEN + EXTRA_SEAL_LEN);
             return Err(ParliaConsensusError::ExtraSignatureMissing);
         }
 
-        if header.number % self.get_epoch_length(header) != 0 {
+        let epoch_length = self.get_epoch_length(header);
+        let is_epoch = header.number % epoch_length == 0;
+        tracing::info!("🔧 [DEBUG] is_epoch={}, epoch_length={}", is_epoch, epoch_length);
+
+        if !is_epoch {
+            tracing::info!("🔧 [DEBUG] Not epoch block, validation passed");
             return Ok(());
         }
 
-        if self.spec.is_luban_active_at_block(header.number) {
+        let is_luban_active = self.spec.is_luban_active_at_block(header.number);
+        tracing::info!("🔧 [DEBUG] is_luban_active={}", is_luban_active);
+
+        if is_luban_active {
             let count = header.extra_data[EXTRA_VANITY_LEN + VALIDATOR_NUMBER_SIZE - 1] as usize;
             let expect =
             EXTRA_VANITY_LEN + VALIDATOR_NUMBER_SIZE + EXTRA_SEAL_LEN + count * VALIDATOR_BYTES_LEN_AFTER_LUBAN;
+            tracing::info!("🔧 [DEBUG] Luban path: count={}, expect={}", count, expect);
             if count == 0 || extra_len < expect {
                 tracing::warn!("Invalid header extra len, block_number: {}, extra_len: {}, expect: {}, count: {}, epoch_length: {}", 
-                    header.number, extra_len, expect, count, self.get_epoch_length(header));
+                    header.number, extra_len, expect, count, epoch_length);
                 return Err(ParliaConsensusError::InvalidHeaderExtraLen {
                     header_extra_len: extra_len as u64,
                 });
             }
         } else {
             let validator_bytes_len = extra_len - EXTRA_VANITY_LEN - EXTRA_SEAL_LEN;
-            if validator_bytes_len / VALIDATOR_BYTES_LEN_BEFORE_LUBAN == 0 ||
-                validator_bytes_len % VALIDATOR_BYTES_LEN_BEFORE_LUBAN != 0
-            {
+            let validator_count = validator_bytes_len / VALIDATOR_BYTES_LEN_BEFORE_LUBAN;
+            let remainder = validator_bytes_len % VALIDATOR_BYTES_LEN_BEFORE_LUBAN;
+            
+            tracing::info!("🔧 [DEBUG] Pre-Luban path: validator_bytes_len={}, validator_count={}, remainder={}", 
+                validator_bytes_len, validator_count, remainder);
+            tracing::info!("🔧 [DEBUG] EXTRA_VANITY_LEN={}, EXTRA_SEAL_LEN={}, VALIDATOR_BYTES_LEN_BEFORE_LUBAN={}", 
+                EXTRA_VANITY_LEN, EXTRA_SEAL_LEN, VALIDATOR_BYTES_LEN_BEFORE_LUBAN);
+                
+            if validator_count == 0 {
+                tracing::error!("🔧 [DEBUG] Failed: validator_count == 0");
                 return Err(ParliaConsensusError::InvalidHeaderExtraLen {
                     header_extra_len: extra_len as u64,
                 });
             }
+            if remainder != 0 {
+                tracing::error!("🔧 [DEBUG] Failed: remainder ({}) != 0", remainder);
+                return Err(ParliaConsensusError::InvalidHeaderExtraLen {
+                    header_extra_len: extra_len as u64,
+                });
+            }
+            
+            tracing::info!("🔧 [DEBUG] Pre-Luban validation passed!");
         }
 
         Ok(())

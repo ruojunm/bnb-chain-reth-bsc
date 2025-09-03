@@ -14,9 +14,11 @@ use std::{fmt::Display, sync::Arc};
 
 pub mod bsc;
 pub mod bsc_chapel;
+pub mod bsc_local;
 pub mod parser;
 
 pub use bsc_chapel::bsc_testnet;
+pub use bsc_local::bsc_local;
 
 /// Bsc chain spec type.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -146,10 +148,15 @@ impl EthExecutorSpec for BscChainSpec {
 impl BscChainSpec {
     /// Get the head information for this chain spec
     pub fn head(&self) -> Head {
-        match self.inner.chain().try_into().ok().unwrap_or(NamedChain::BinanceSmartChain) {
-            NamedChain::BinanceSmartChain => bsc::head(),
-            NamedChain::BinanceSmartChainTestnet => bsc_chapel::head(),
-            _ => bsc::head(),
+        match self.inner.chain().id() {
+            56 => bsc::head(),
+            97 => bsc_chapel::head(),
+            1337 => bsc_local::head(),
+            _ => match self.inner.chain().try_into().ok().unwrap_or(NamedChain::BinanceSmartChain) {
+                NamedChain::BinanceSmartChain => bsc::head(),
+                NamedChain::BinanceSmartChainTestnet => bsc_chapel::head(),
+                _ => bsc::head(),
+            }
         }
     }
 }

@@ -38,14 +38,28 @@ where
         hash: B256,
         number: BlockNumber,
     ) -> Result<(B256, B256), ParliaConsensusErr> {
-        let current_head = self.provider.best_block_number()?;
-        let current_hash =
-            self.provider.block_hash(current_head)?.ok_or(ParliaConsensusErr::HeadHashNotFound)?;
+        // For local development, check local blockchain first
+        let local_head = crate::shared::get_local_head_number();
+        if local_head > 0 {
+            let local_hash = crate::shared::get_local_head_hash();
+            tracing::debug!("Using local blockchain head: block {} (hash: 0x{:x})", local_head, local_hash);
+            
+            match number.cmp(&local_head) {
+                Ordering::Greater => Ok((hash, local_hash)),
+                Ordering::Equal => Ok((hash.min(local_hash), local_hash)),
+                Ordering::Less => Ok((local_hash, local_hash)),
+            }
+        } else {
+            // Fallback to provider
+            let current_head = self.provider.best_block_number()?;
+            let current_hash =
+                self.provider.block_hash(current_head)?.ok_or(ParliaConsensusErr::HeadHashNotFound)?;
 
-        match number.cmp(&current_head) {
-            Ordering::Greater => Ok((hash, current_hash)),
-            Ordering::Equal => Ok((hash.min(current_hash), current_hash)),
-            Ordering::Less => Ok((current_hash, current_hash)),
+            match number.cmp(&current_head) {
+                Ordering::Greater => Ok((hash, current_hash)),
+                Ordering::Equal => Ok((hash.min(current_hash), current_hash)),
+                Ordering::Less => Ok((current_hash, current_hash)),
+            }
         }
     }
 }

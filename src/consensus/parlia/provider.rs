@@ -6,7 +6,7 @@ use crate::chainspec::BscChainSpec;
 
 use crate::consensus::parlia::{Parlia, VoteAddress};
 use crate::node::evm::error::BscBlockExecutionError;
-use alloy_primitives::{Address, B256};
+use alloy_primitives::{Address, B256, hex};
 
 /// Validator information extracted from header
 #[derive(Debug, Clone)]
@@ -227,21 +227,38 @@ impl<DB: Database + 'static> SnapshotProvider for EnhancedDbSnapshotProvider<DB>
             // Check if we need to handle genesis
             if current_block == 0 {
                 if let Some(header) = crate::node::evm::util::HEADER_CACHE_READER.lock().unwrap().get_header_by_number(0) {
-                    let ValidatorsInfo { consensus_addrs, vote_addrs } =
-                        self.parlia.parse_validators_from_header(&header, self.parlia.epoch).map_err(|err| {
-                            BscBlockExecutionError::ParliaConsensusInnerError { error: err.into() }
-                        }).ok()?;
-                    let genesis_snap = Snapshot::new(
-                        consensus_addrs,
-                        0, // Genesis block number
-                        header.hash_slow(),
-                        self.parlia.epoch,
-                        vote_addrs,
-                    );
-                    self.base.cache.write().insert(0, genesis_snap.clone());
-                    self.base.persist_to_db(&genesis_snap).ok()?;
-                    tracing::info!("Succeed to persist genesis snapshot for block 0 to DB");
-                    break genesis_snap;
+                    tracing::info!("🔍 Found genesis header, attempting to parse validators. ExtraData length: {}", header.extra_data.len());
+                    tracing::info!("🔍 Genesis header extraData: 0x{}", hex::encode(&header.extra_data));
+                    
+                    match self.parlia.parse_validators_from_header(&header, self.parlia.epoch) {
+                        Ok(ValidatorsInfo { consensus_addrs, vote_addrs }) => {
+                            tracing::info!("✅ Successfully parsed {} validators from genesis header", consensus_addrs.len());
+                            tracing::info!("✅ Validators: {:?}", consensus_addrs);
+                            
+                                                   let mut genesis_snap = Snapshot::new(
+                           consensus_addrs,
+                           0, // Genesis block number
+                           header.hash_slow(),
+                           self.parlia.epoch,
+                           vote_addrs,
+                       );
+                       
+                       // For single-validator local development, use a higher turn_length
+                       // to allow consecutive block mining without sign_recently blocking
+                       if genesis_snap.validators.len() == 1 {
+                           genesis_snap.turn_length = Some(10); // Allow 10 consecutive blocks per validator
+                           tracing::info!("🔧 Single validator detected, setting turn_length=10 for local development");
+                       }
+                            self.base.cache.write().insert(0, genesis_snap.clone());
+                            self.base.persist_to_db(&genesis_snap).ok()?;
+                            tracing::info!("✅ Successfully created and persisted genesis snapshot for block 0");
+                            break genesis_snap;
+                        }
+                        Err(err) => {
+                            tracing::error!("❌ Failed to parse validators from genesis header: {:?}", err);
+                            return None;
+                        }
+                    }
                 } else {
                     tracing::error!("Failed to get genesis header for block 0");
                     return None;

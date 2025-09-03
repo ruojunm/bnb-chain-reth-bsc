@@ -207,6 +207,13 @@ where
     fn sign_fn(&self, data: &[u8]) -> Result<Vec<u8>, ConsensusError> {
         let hash = keccak256(data);
         let sig_result: Signature = self.signing_key.sign(hash.as_slice());
-        Ok(sig_result.to_bytes().to_vec())
+        
+        // Convert to 65-byte Ethereum-style signature (r + s + v)
+        let mut signature_bytes = Vec::with_capacity(65);
+        signature_bytes.extend_from_slice(&sig_result.to_bytes()); // 64 bytes (r + s)
+        signature_bytes.push(0); // Recovery ID (v) - start with 0, will be determined during verification
+        
+        tracing::debug!("Generated signature: {} bytes", signature_bytes.len());
+        Ok(signature_bytes)
     }
 }

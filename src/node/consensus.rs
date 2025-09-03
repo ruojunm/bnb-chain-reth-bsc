@@ -13,7 +13,7 @@ use reth::{
     primitives::{SealedHeader, SealedBlock, RecoveredBlock},
     providers::BlockExecutionResult,
 };
-use alloy_consensus::Header;
+use alloy_consensus::{Header, BlockHeader};
 use reth_ethereum_primitives::Receipt;
 use crate::consensus::parlia::util::calculate_millisecond_timestamp;
 use reth_chainspec::EthChainSpec;
@@ -44,6 +44,23 @@ where
 
         crate::shared::set_header_provider(Arc::new(ctx.provider().clone()))
             .unwrap_or_else(|e| panic!("Failed to set global header provider: {e}"));
+
+        // Store database provider for direct block writing (Option C: Go BSC approach)
+        crate::shared::set_database_provider(Arc::new(ctx.provider().clone()))
+            .unwrap_or_else(|e| panic!("Failed to set global database provider: {e}"));
+        tracing::info!("✅ Stored database provider for direct block writing (Go BSC approach)");
+
+        // Initialize local blockchain for development
+        crate::shared::init_local_blockchain();
+        tracing::info!("✅ Initialized local blockchain for development");
+
+        // Initialize genesis header in header cache for snapshot creation
+        let genesis_header = ctx.chain_spec().genesis_header().clone();
+        crate::node::evm::util::HEADER_CACHE_READER
+            .lock()
+            .unwrap()
+            .insert_header_to_cache(genesis_header.clone());
+        tracing::info!("✅ Inserted genesis header into cache for block {}", genesis_header.number());
 
         Ok(Arc::new(BscConsensus::new(ctx.chain_spec())))
     }
