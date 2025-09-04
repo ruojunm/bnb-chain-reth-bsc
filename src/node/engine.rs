@@ -20,6 +20,7 @@ use reth_provider::{BlockNumReader, HeaderProvider};
 use reth_evm::ConfigureEvm;
 use reth_payload_primitives::BuiltPayload;
 use reth_primitives::{SealedBlock, TransactionSigned};
+use reth_primitives_traits::SignerRecoverable;
 use tokio::sync::{broadcast, mpsc};
 use tokio::time::interval;
 use tracing::{info, warn, error, debug};
@@ -139,6 +140,11 @@ where
             info!("Mining is disabled in configuration");
             return Ok(());
         }
+
+        // Add startup delay to ensure all validators are ready for P2P communication
+        info!("⏱️ Mining startup delay: waiting 15 seconds for all validators to be ready...");
+        tokio::time::sleep(std::time::Duration::from_secs(15)).await;
+        info!("✅ Startup delay complete, beginning mining operations");
         
         info!("Starting BSC mining service for validator: {}", self.validator_address);
         
@@ -149,23 +155,104 @@ where
         loop {
             mining_interval.tick().await;
             
-            info!("🔄 Mining interval tick - attempting to mine next block (current head: {})", self.last_submitted_block);
-            match self.try_mine_block().await {
-                Ok(()) => {
-                    info!("✅ Mining attempt succeeded");
+            // 🔥 CRITICAL FIX: Use global mining head for consistent logging and state
+            let global_head = crate::shared::get_global_mining_head();
+            let current_effective_head = std::cmp::max(self.last_submitted_block, global_head);
+            
+            info!("🔄 Mining interval tick - attempting to mine next block (effective head: {}, local: {}, global: {})", 
+                current_effective_head, self.last_submitted_block, global_head);
+            
+            // 🔥 CRITICAL FIX: Sync local state with global if needed
+            if global_head > self.last_submitted_block {
+                info!("🔄 SYNCING LOCAL STATE: Updating local head from {} to {} based on P2P integration", 
+                    self.last_submitted_block, global_head);
+                self.sync_local_state_with_global().await;
+            }
+            
+            // For multi-validator setups, check if it's our turn before attempting to mine
+            if self.is_my_turn_to_mine().await {
+                match self.try_mine_block().await {
+                    Ok(()) => {
+                        info!("✅ Mining attempt succeeded");
+                    }
+                    Err(e) => {
+                        info!("❌ Mining attempt failed: {}", e);
+                        // Continue mining loop even if individual attempts fail
+                    }
                 }
-                Err(e) => {
-                    info!("❌ Mining attempt failed: {}", e);
-                    // Continue mining loop even if individual attempts fail
-                }
+            } else {
+                // Not our turn, just wait for the next interval
+                // debug!("⏸️ Not our turn to mine, waiting...");
+            }
+        }
+    }
+
+    /// Sync local BscMiner state with global state (for P2P-received blocks)
+    async fn sync_local_state_with_global(&mut self) {
+        let global_head = crate::shared::get_global_mining_head();
+        
+        if global_head > self.last_submitted_block {
+            // Update local head to match global
+            self.last_submitted_block = global_head;
+            
+            // Try to get the header for the new head block
+            if let Some(header) = crate::shared::get_header_by_number(global_head) {
+                self.last_submitted_header = Some(header);
+                info!("✅ LOCAL STATE SYNCED: Updated to block {} with header", global_head);
+            } else {
+                // If header not available, clear it so we fall back to provider lookup
+                self.last_submitted_header = None;
+                info!("⚠️ LOCAL STATE SYNCED: Updated to block {} but header not cached", global_head);
+            }
+        }
+    }
+
+    /// Check if it's this validator's turn to mine the next block
+    async fn is_my_turn_to_mine(&self) -> bool {
+        // Use global mining head for accurate turn-taking coordination across all validators
+        let global_head = crate::shared::get_global_mining_head();
+        let current_mining_head = std::cmp::max(self.last_submitted_block, global_head);
+        let next_block_number = current_mining_head + 1;
+        
+        // 🔍 ENHANCED DEBUG: Always log for debugging the turn-taking issue
+        info!("🔍 TURN-TAKING DEBUG: global_head={}, local_head={}, current_mining_head={}, next_block={}", 
+            global_head, self.last_submitted_block, current_mining_head, next_block_number);
+        
+        match self.snapshot_provider.snapshot(current_mining_head) {
+            Some(snapshot) => {
+                // Check if we're the inturn validator for the next block
+                let inturn_validator = snapshot.inturn_validator();
+                let is_my_turn = inturn_validator == self.validator_address;
+                
+                // 🔍 ENHANCED DEBUG: Always log turn-taking decision for debugging
+                info!("🎯 TURN-TAKING: Block {} - Inturn validator: 0x{:x}, Current validator: 0x{:x}, My turn: {}", 
+                    next_block_number, inturn_validator, self.validator_address, is_my_turn);
+                
+                // 🔍 ENHANCED DEBUG: Log snapshot details
+                info!("📊 SNAPSHOT INFO: Block {} snapshot has {} validators, turn_length={:?}", 
+                    current_mining_head, snapshot.validators.len(), snapshot.turn_length);
+                
+                is_my_turn
+            }
+            None => {
+                // If no snapshot available, allow mining (fallback for single validator)
+                warn!("❌ SNAPSHOT MISSING: No snapshot available for block {}, allowing mining as fallback", current_mining_head);
+                true
             }
         }
     }
 
     /// Attempt to mine a block if conditions are met
     async fn try_mine_block(&mut self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        // Use local head tracking for faster block progression
-        let current_block_number = self.last_submitted_block;
+        // Use global mining head for coordinated block progression
+        let global_head = crate::shared::get_global_mining_head();
+        let current_block_number = std::cmp::max(self.last_submitted_block, global_head);
+        
+        if global_head > self.last_submitted_block {
+            info!("🔄 try_mine_block: Using global head {} instead of local {} for mining coordination", 
+                global_head, self.last_submitted_block);
+        }
+        
         info!("🔍 try_mine_block: current_block_number={}, fetching header...", current_block_number);
         
         let head_header = if current_block_number == 0 {
@@ -446,7 +533,7 @@ where
         }
     }
 
-    /// Submit the sealed block using P2P broadcasting for true BSC compatibility
+    /// Submit the sealed block using BSC Official Pattern: Write → Update → Broadcast
     async fn submit_block(
         &mut self,
         sealed_block: SealedBlock<BscBlock>,
@@ -463,61 +550,87 @@ where
             block_hash, block_number, parent_hash, timestamp, gas_used, tx_count
         );
 
-        // For local development: Direct canonical head update
-        match self.submit_via_direct_canonical_update(&sealed_block).await {
-            Ok(()) => {
-                info!("✅ Block {} added to canonical chain for local development", block_number);
-                // Update local head tracking for next mining round
+        // 🔗 PHASE 1: BSC OFFICIAL PATTERN - Write to canonical chain FIRST
+        info!("🔗 [STEP 1] Writing block {} to canonical chain (BSC Official Pattern)", block_number);
+        
+        match crate::shared::write_block_to_canonical_chain(sealed_block.clone()) {
+            Ok(crate::shared::CanonicalStatus::Canon) => {
+                info!("✅ [STEP 1] Block {} became canonical head", block_number);
+                
+                // 🔄 PHASE 1: Update local miner state AFTER canonical write
+                info!("🔄 [STEP 2] Updating local miner state after canonical write", );
                 self.last_submitted_block = block_number;
                 let header = sealed_block.header().clone();
                 self.last_submitted_header = Some(header.clone());
                 
-                // Insert the mined header into cache so snapshot provider can find it
-                crate::node::evm::util::HEADER_CACHE_READER
-                    .lock()
-                    .unwrap()
-                    .insert_header_to_cache(header);
+                // Update global mining head for multi-validator coordination
+                crate::shared::update_global_mining_head(block_number);
                 
-                info!("🔄 Updated local head to block {} and stored header in cache for next mining round", block_number);
+                info!("✅ [STEP 2] Local miner state updated to block {}", block_number);
+                
+                // 🚀 PHASE 1: Broadcast ONLY after successful canonical write
+                info!("🚀 [STEP 3] Broadcasting block {} to P2P network (post-canonical)", block_number);
+                
+                match self.broadcast_block_to_peers(&sealed_block).await {
+                    Ok(()) => {
+                        info!("✅ [STEP 3] Block {} successfully broadcasted to peers", block_number);
+                    }
+                    Err(e) => {
+                        warn!("⚠️ [STEP 3] P2P broadcast failed for block {}: {} (block still canonical)", block_number, e);
+                    }
+                }
+                
+                info!("🎉 BSC OFFICIAL SUCCESS: Block {} fully processed (canonical + broadcast)", block_number);
                 Ok(())
             }
+            Ok(status) => {
+                warn!("❌ Block {} not canonical (status: {:?}), skipping broadcast", block_number, status);
+                Err(format!("Block {} rejected as non-canonical", block_number).into())
+            }
             Err(e) => {
-                warn!("Failed to add block to canonical chain: {}, trying fallback", e);
-                // Fallback: Still update local state
-                self.last_submitted_block = block_number;
-                let header = sealed_block.header().clone();
-                self.last_submitted_header = Some(header.clone());
-                crate::node::evm::util::HEADER_CACHE_READER
-                    .lock()
-                    .unwrap()
-                    .insert_header_to_cache(header);
-                Ok(())
+                error!("❌ Failed to write block {} to canonical chain: {}", block_number, e);
+                Err(e)
             }
         }
     }
 
-    /// Submit block via direct database write (Option C: Go BSC approach)
-    async fn submit_via_direct_canonical_update(
+    /// Broadcast block to P2P network (BSC Official Pattern - only called AFTER canonical write)
+    async fn broadcast_block_to_peers(
         &self,
         sealed_block: &SealedBlock<BscBlock>,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        info!("💾 Option C: Writing block {} directly to database (Go BSC approach)", sealed_block.number());
+        let block_number = sealed_block.number();
         
-        // Write block directly to reth database for immediate RPC availability
-        match crate::shared::write_block_to_database(sealed_block.clone()) {
-            Ok(()) => {
-                info!("✅ Block {} written to database - now available for RPC queries", sealed_block.number());
-                Ok(())
+        info!("🌐 BSC P2P BROADCAST: Starting P2P broadcast for canonical block {}", block_number);
+        info!("   📊 Block details: miner=0x{:x}, parent=0x{:x}, timestamp={}", 
+            sealed_block.beneficiary(), sealed_block.parent_hash(), sealed_block.timestamp());
+        
+        // BSC P2P Broadcasting (equivalent to NewMinedBlockEvent in go-ethereum)
+        // Method 1: Direct validator notification (for multi-validator dev environment)
+        info!("📡 BSC P2P: Direct validator notification");
+        self.notify_validators_directly(sealed_block).await;
+        
+        // Method 2: Traditional P2P broadcast (when available)
+        if let Some(import_handle) = crate::shared::get_import_handle() {
+            info!("🔗 BSC P2P: Traditional P2P broadcast");
+            match self.submit_via_p2p_import(&import_handle, sealed_block).await {
+                Ok(()) => {
+                    info!("✅ Traditional P2P broadcast succeeded for block {}", block_number);
+                }
+                Err(e) => {
+                    warn!("Traditional P2P broadcast failed for block {}: {}", block_number, e);
+                }
             }
-            Err(e) => {
-                warn!("Failed to write block to database: {}, using fallback", e);
-                // Fallback to local blockchain
-                crate::shared::add_block_to_local_chain(sealed_block.clone())
-                    .map_err(|e| format!("Both database write and local blockchain failed: {}", e))?;
-                info!("🔧 Block {} added to local blockchain (fallback mode)", sealed_block.number());
-                Ok(())
-            }
+        } else {
+            info!("ℹ️ Traditional P2P not available - using direct notification only");
         }
+        
+        // Method 3: Global validator state synchronization
+        crate::shared::notify_new_block_to_all_validators(sealed_block.clone())
+            .map_err(|e| format!("Failed to notify validators of new block: {}", e))?;
+        
+        info!("🎉 BSC P2P SUCCESS: Block {} broadcast completed", block_number);
+        Ok(())
     }
     
 
@@ -557,6 +670,178 @@ where
         info!("✅ Block {} sent to import service for canonical chain integration", sealed_block.number());
         Ok(())
     }
+    
+    /// Enhanced fallback: directly notify other validators via HTTP API calls
+    async fn notify_validators_directly(&self, sealed_block: &SealedBlock<BscBlock>) {
+        info!("🚀 Enhanced P2P: DIRECT VALIDATOR NOTIFICATION for block {} starting", sealed_block.number());
+        
+        // List of all validator ports
+        let all_validator_ports = vec![8545, 8547, 8549];
+        let current_miner = sealed_block.beneficiary();
+        let my_port = self.get_my_validator_port(current_miner);
+        
+        info!("   📊 Notification details: miner=0x{:x}, my_port={:?}", current_miner, my_port);
+        
+        // Clone the data we need for the async tasks
+        let block_json = self.serialize_block_for_sharing(sealed_block).await;
+        let block_number = sealed_block.number();
+        
+        let mut notification_tasks = Vec::new();
+        
+        for port in all_validator_ports {
+            // Skip notifying ourselves
+            if Some(port) == my_port {
+                info!("   ⏭️ Skipping own port {} (I am the miner)", port);
+                continue;
+            }
+            
+            info!("   📤 Sending notification to validator on port {}", port);
+            let block_json_clone = block_json.clone();
+            
+            let task = tokio::spawn(async move {
+                let client = reqwest::Client::builder()
+                    .timeout(std::time::Duration::from_secs(5))
+                    .build()
+                    .unwrap();
+                    
+                let notify_payload = serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "method": "parlia_receiveBlock",
+                    "params": [block_json_clone],
+                    "id": 1
+                });
+                
+                tracing::info!("📡 Enhanced P2P: Sending HTTP notification to port {} for block {}", port, block_number);
+                
+                // Retry logic for failed notifications
+                let mut retry_count = 0;
+                let max_retries = 3;
+                let mut success = false;
+                
+                while retry_count <= max_retries && !success {
+                    if retry_count > 0 {
+                        tracing::info!("🔄 Enhanced P2P: Retry {} for block {} notification to port {}", 
+                            retry_count, block_number, port);
+                        tokio::time::sleep(std::time::Duration::from_millis(1000 * retry_count)).await;
+                    }
+                    
+                    match client
+                        .post(format!("http://localhost:{}", port))
+                        .header("Content-Type", "application/json")
+                        .json(&notify_payload)
+                        .send()
+                        .await
+                    {
+                        Ok(response) => {
+                            let status = response.status();
+                            if status.is_success() {
+                                if let Ok(response_text) = response.text().await {
+                                    tracing::info!("✅ Enhanced P2P: Block {} notification SUCCESS to port {} (attempt {}) - Response: {}", 
+                                        block_number, port, retry_count + 1, response_text);
+                                } else {
+                                    tracing::info!("✅ Enhanced P2P: Block {} notification SUCCESS to port {} (attempt {}) (no response body)", 
+                                        block_number, port, retry_count + 1);
+                                }
+                                success = true;
+                            } else {
+                                tracing::warn!("⚠️ Enhanced P2P: Block {} notification to port {} failed with status: {} (attempt {})", 
+                                    block_number, port, status, retry_count + 1);
+                            }
+                        }
+                        Err(e) => {
+                            tracing::warn!("❌ Enhanced P2P: Block {} notification to port {} failed with error: {} (attempt {})", 
+                                block_number, port, e, retry_count + 1);
+                        }
+                    }
+                    
+                    retry_count += 1;
+                }
+                
+                if !success {
+                    tracing::error!("💥 Enhanced P2P: Failed to notify port {} for block {} after {} attempts", 
+                        port, block_number, max_retries + 1);
+                }
+                
+                (port, block_number)
+            });
+            
+            notification_tasks.push(task);
+        }
+        
+        // Wait for all notifications to complete
+        for task in notification_tasks {
+            if let Ok((port, block_number)) = task.await {
+                info!("   ✅ Notification task completed for port {} block {}", port, block_number);
+            }
+        }
+        
+        info!("🎉 Enhanced P2P: Direct validator notification completed for block {}", sealed_block.number());
+    }
+    
+    /// Get the port number for our validator
+    fn get_my_validator_port(&self, current_miner: alloy_primitives::Address) -> Option<u16> {
+        // Map validator addresses to their ports
+        match format!("0x{:x}", current_miner).as_str() {
+            "0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266" => Some(8545), // Validator 1
+            "0x70997970c51812dc3a010c7d01b50e0d17dc79c8" => Some(8547), // Validator 2
+            "0x3c44cdddb6a900fa2b585dd299e03d12fa4293bc" => Some(8549), // Validator 3
+            _ => None,
+        }
+    }
+    
+    /// Check if a port belongs to our validator
+    fn is_our_validator_port(&self, port: u16, current_miner: alloy_primitives::Address) -> bool {
+        self.get_my_validator_port(current_miner) == Some(port)
+    }
+    
+    /// Serialize complete block data for inter-validator sharing and integration
+    async fn serialize_block_for_sharing(&self, sealed_block: &SealedBlock<BscBlock>) -> serde_json::Value {
+        // Serialize transactions for full block data transfer
+        let transactions: Vec<serde_json::Value> = sealed_block.body().transactions
+            .iter()
+            .enumerate()
+            .map(|(index, tx)| {
+                serde_json::json!({
+                    "hash": format!("0x{:x}", tx.hash()),
+                    "nonce": format!("0x{:x}", tx.nonce()),
+                    "from": format!("0x{:x}", tx.recover_signer().unwrap_or_default()),
+                    "to": tx.to().map(|addr| format!("0x{:x}", addr)),
+                    "value": format!("0x{:x}", tx.value()),
+                    "gasLimit": format!("0x{:x}", tx.gas_limit()),
+                    "gasPrice": format!("0x{:x}", tx.gas_price().unwrap_or(0)),
+                    "input": format!("0x{}", hex::encode(tx.input())),
+                    "transactionIndex": format!("0x{:x}", index)
+                })
+            })
+            .collect();
+
+        serde_json::json!({
+            // Block header data
+            "number": format!("0x{:x}", sealed_block.number()),
+            "hash": format!("0x{:x}", sealed_block.hash()),
+            "parentHash": format!("0x{:x}", sealed_block.parent_hash()),
+            "miner": format!("0x{:x}", sealed_block.beneficiary()),
+            "timestamp": format!("0x{:x}", sealed_block.timestamp()),
+            "gasUsed": format!("0x{:x}", sealed_block.gas_used()),
+            "gasLimit": format!("0x{:x}", sealed_block.gas_limit()),
+            "difficulty": format!("0x{:x}", sealed_block.difficulty()),
+            "extraData": format!("0x{}", hex::encode(&sealed_block.extra_data())),
+            "transactionsRoot": format!("0x{:x}", sealed_block.transactions_root()),
+            
+            // Full block data for integration
+            "transactions": transactions,
+            "transactionCount": sealed_block.body().transactions.len(),
+            
+            // Enhanced P2P metadata for validation and integration
+            "blockDataComplete": true,
+            "enhancedP2P": true,
+            "source": "direct_validator_notification",
+            "broadcastTimestamp": std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs()
+        })
+    }
 }
 
 impl<Node, Pool, Evm> PayloadServiceBuilder<Node, Pool, Evm> for BscPayloadServiceBuilder
@@ -584,7 +869,7 @@ where
         if !mining_config.is_mining_enabled() {
             info!("Mining is disabled in configuration");
         } else {
-            info!("Mining is enabled - will start mining after consensus initialization");
+            info!("Mining is enabled - will start mining after consensus initialization and startup delay");
             
             // Defer mining initialization until consensus module sets up the snapshot provider
             let mining_config_clone = mining_config.clone();

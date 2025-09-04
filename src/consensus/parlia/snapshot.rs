@@ -160,10 +160,32 @@ impl Snapshot {
                 return None;
             }
         } else {
-            // For single validator development, allow consecutive blocks
+            // For local development with multiple validators, allow proper turn-taking
             if snap.validators.len() == 1 {
                 tracing::debug!("Single validator detected, allowing consecutive blocks for local development");
+            } else if snap.validators.len() <= 5 {
+                // For small validator sets (local development), use relaxed recent_proposers check
+                // Allow validator to mine if they haven't mined in the last (validators_count - 1) blocks
+                let min_gap = (snap.validators.len() - 1) as u64;
+                let recent_blocks: Vec<u64> = snap.recent_proposers.keys()
+                    .filter(|&&block_num| block_num > block_number.saturating_sub(min_gap))
+                    .filter_map(|&block_num| {
+                        if snap.recent_proposers.get(&block_num) == Some(&validator) {
+                            Some(block_num)
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+                
+                if !recent_blocks.is_empty() {
+                    tracing::warn!("Failed to apply block due to over-proposed, validator: {:?}, block_number: {:?}, recent_blocks: {:?}, min_gap: {}", 
+                        validator, block_number, recent_blocks, min_gap);
+                    return None;
+                }
+                tracing::debug!("Multi-validator local development: validator {:?} allowed to mine block {}", validator, block_number);
             } else {
+                // Original strict check for production setups
                 for &v in snap.recent_proposers.values() {
                     if v == validator {
                         tracing::warn!("Failed to apply block due to over-proposed, validator: {:?}, block_number: {:?}", validator, block_number);

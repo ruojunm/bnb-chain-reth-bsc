@@ -82,11 +82,13 @@ cfg-if = { version = "1.0", default-features = false }
 derive_more = "0.99"
 eyre = "0.6"
 futures = "0.3"
+hex = "0.4"
 lazy_static = "1.4.0"
 phf = { version = "0.11", features = ["macros"] }
 once_cell = { version = "1.19", default-features = false, features = ["alloc"] }
 parity-bytes = { version = "0.1.2", default-features = false }
 parking_lot = "0.12"
+reqwest = { version = "0.11", features = ["json"] }
 secp256k1 = { version = "0.30", features = ["global-context", "std", "recovery"] }
 serde = { version = "1.0", features = ["derive"], default-features = false }
 serde_json = "1.0"
