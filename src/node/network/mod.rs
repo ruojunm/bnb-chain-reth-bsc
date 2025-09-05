@@ -216,13 +216,19 @@ impl BscNetworkBuilder {
         
         // Spawn the critical ImportService task exactly like the official implementation
         ctx.task_executor().spawn_critical("block import", async move {
-            let handle = engine_handle_rx
+            let handle = match engine_handle_rx
                 .lock()
                 .await
                 .take()
                 .expect("node should only be launched once")
                 .await
-                .unwrap();
+            {
+                Ok(handle) => handle,
+                Err(e) => {
+                    tracing::error!("Failed to receive engine handle: {}", e);
+                    return;
+                }
+            };
 
             // Store the engine handle in shared state for mining service
             if let Err(_) = crate::shared::set_engine_handle(handle.clone()) {
@@ -231,7 +237,9 @@ impl BscNetworkBuilder {
                 tracing::info!("✅ Engine handle stored in shared state for mining service");
             }
 
-            ImportService::new(consensus, handle, from_network, to_network).await.unwrap();
+            if let Err(e) = ImportService::new(consensus, handle, from_network, to_network).await {
+                tracing::error!("ImportService failed: {}", e);
+            }
         });
 
         let network_builder = network_builder

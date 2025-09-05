@@ -53,6 +53,10 @@ where
         // Initialize local blockchain for development
         crate::shared::init_local_blockchain();
         tracing::info!("✅ Initialized local blockchain for development");
+        
+        // Initialize database-backed blockchain for persistent storage
+        crate::shared::init_database_blockchain();
+        tracing::info!("✅ Initialized database-backed blockchain for persistent storage");
 
         // Initialize genesis header in header cache for snapshot creation
         let genesis_header = ctx.chain_spec().genesis_header().clone();

@@ -39,6 +39,10 @@ echo "✅ Starting validator 2..."
     --discovery.port 30304 \
     --discovery.addr 0.0.0.0 \
     --nat extip:127.0.0.1 \
+    --bootnodes "enode://9acc9b94f3f5b1cc2b25566c6fd0363f194a491e13fa1fca70402e322b8bb6ac8117ad0a8b1e95009d462f11ad7a082a4a80c59ebf1757ba6d8fdfb42c683dad@18.162.231.39:30303" \
+    --trusted-peers "enode://9acc9b94f3f5b1cc2b25566c6fd0363f194a491e13fa1fca70402e322b8bb6ac8117ad0a8b1e95009d462f11ad7a082a4a80c59ebf1757ba6d8fdfb42c683dad@18.162.231.39:30303" \
+    --mining.enabled \
+    --mining.private-key 59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d \
     --log.file.filter warn \
     --log.stdout.filter info \
     -vvv \

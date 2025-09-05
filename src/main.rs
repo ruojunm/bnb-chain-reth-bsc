@@ -86,7 +86,16 @@ fn main() -> eyre::Result<()> {
             let NodeHandle { node, node_exit_future: exit_future } =
                 builder.node(node)
                     .extend_rpc_modules(move |ctx| {
-                        tracing::info!("Start to register Parlia RPC API: parlia_getSnapshot");
+                        // Register Enhanced BSC RPC API for local testing
+                        tracing::info!("🌐 Registering BSC Local Testing APIs (use bsc_* methods for reliable local testing)");
+                        use reth_bsc::rpc::eth::{EthApiImpl, BscEthApiServer};
+                        
+                        let bsc_testing_api = EthApiImpl::new();
+                        ctx.modules.merge_configured(bsc_testing_api.into_rpc())?;
+                        tracing::info!("✅ BSC Testing APIs ready! Use bsc_blockNumber, bsc_getBlockByNumber for local testing");
+                        
+                        // Register Parlia-specific RPC API
+                        tracing::info!("🔧 Registering Parlia RPC API: parlia_getSnapshot");
                         use reth_bsc::rpc::parlia::{ParliaApiImpl, ParliaApiServer, DynSnapshotProvider};
                         
                         let snapshot_provider = if let Some(provider) = reth_bsc::shared::get_snapshot_provider() {
@@ -100,7 +109,7 @@ fn main() -> eyre::Result<()> {
                         let parlia_api = ParliaApiImpl::new(wrapped_provider);
                         ctx.modules.merge_configured(parlia_api.into_rpc())?;
 
-                        tracing::info!("Succeed to register Parlia RPC API");
+                        tracing::info!("✅ Parlia RPC API registered successfully");
                         Ok(())
                     })
                     .launch().await?;

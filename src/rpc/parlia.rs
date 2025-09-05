@@ -107,14 +107,11 @@ pub trait ParliaApi {
     #[method(name = "getLocalBlock")]
     async fn get_local_block(&self, block_number: String) -> RpcResult<Option<serde_json::Value>>;
     
-    /// BSC-compatible eth_getBlockByNumber that uses local blockchain state
+    /// BSC-compatible getBlockByNumber that uses persistent blockchain state
     /// This provides the same functionality as standard eth_getBlockByNumber but actually works
-    #[method(name = "eth_getBlockByNumber")]
+    #[method(name = "getBlockByNumber")]
     async fn eth_get_block_by_number(&self, block_number: String, full_transactions: bool) -> RpcResult<Option<serde_json::Value>>;
     
-    /// Standard Ethereum eth_blockNumber - overridden to use local blockchain head
-    #[method(name = "eth_blockNumber")]
-    async fn eth_block_number(&self) -> RpcResult<String>;
 
     /// Enhanced P2P: Receive block notification from another validator
     #[method(name = "receiveBlock")]
@@ -222,10 +219,10 @@ impl<P: SnapshotProvider + Send + Sync + 'static> ParliaApiServer for ParliaApiI
     
     /// Get the current local blockchain head with detailed information (enhanced for monitoring)
     async fn get_local_head(&self) -> RpcResult<serde_json::Value> {
-        let head_number = crate::shared::get_local_head_number();
+        let head_number = crate::shared::get_best_block_number_for_rpc();
         
         // Get detailed information about the head block
-        if let Some(head_block) = crate::shared::get_local_block_by_number(head_number) {
+        if let Some(head_block) = crate::shared::get_best_block_by_number(head_number) {
             let header = head_block.header();
             let head_info = serde_json::json!({
                 "number": format!("0x{:x}", head_number),
@@ -281,8 +278,8 @@ impl<P: SnapshotProvider + Send + Sync + 'static> ParliaApiServer for ParliaApiI
             }
         };
         
-        // Get block from local blockchain
-        if let Some(local_block) = crate::shared::get_local_block_by_number(block_num) {
+        // Get block from persistent blockchain (database first, local fallback)
+        if let Some(local_block) = crate::shared::get_best_block_by_number(block_num) {
             let header = local_block.header();
             let block_info = serde_json::json!({
                 "number": format!("0x{:x}", header.number()),
@@ -304,7 +301,7 @@ impl<P: SnapshotProvider + Send + Sync + 'static> ParliaApiServer for ParliaApiI
         }
     }
     
-    /// BSC-compatible eth_getBlockByNumber that uses local blockchain state
+    /// BSC-compatible getBlockByNumber that uses persistent blockchain state
     async fn eth_get_block_by_number(&self, block_number: String, full_transactions: bool) -> RpcResult<Option<serde_json::Value>> {
         // Parse block number (same logic as get_local_block)
         let block_num = if let Some(stripped) = block_number.strip_prefix("0x") {
@@ -327,8 +324,8 @@ impl<P: SnapshotProvider + Send + Sync + 'static> ParliaApiServer for ParliaApiI
             }
         };
         
-        // Get block from local blockchain
-        if let Some(local_block) = crate::shared::get_local_block_by_number(block_num) {
+        // Get block from persistent blockchain (database first, local fallback)
+        if let Some(local_block) = crate::shared::get_best_block_by_number(block_num) {
             let header = local_block.header();
             
             // Format response to match standard eth_getBlockByNumber format
@@ -368,13 +365,6 @@ impl<P: SnapshotProvider + Send + Sync + 'static> ParliaApiServer for ParliaApiI
         }
     }
     
-    /// Standard Ethereum eth_blockNumber - returns local blockchain head as hex
-    async fn eth_block_number(&self) -> RpcResult<String> {
-        let head_number = crate::shared::get_local_head_number();
-        let hex_result = format!("0x{:x}", head_number);
-        tracing::info!("🔍 [BSC-ETH] eth_blockNumber called -> {} ({})", hex_result, head_number);
-        Ok(hex_result)
-    }
 
     async fn receive_block(&self, block_data: serde_json::Value) -> RpcResult<bool> {
         tracing::info!("🚀 Enhanced P2P: BLOCK DATA INTEGRATION starting - complete block received");

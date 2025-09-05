@@ -635,7 +635,7 @@ where
     
 
     
-    /// Submit block via P2P import service (true BSC approach)
+    /// Submit block via P2P import service and direct HTTP notification (BSC approach)
     async fn submit_via_p2p_import(
         &self,
         import_handle: &crate::node::network::block_import::handle::ImportHandle,
@@ -646,12 +646,13 @@ where
         use reth_network::message::NewBlockMessage;
         use reth_network_api::PeerId;
         
-        info!("🌐 Broadcasting block {} via P2P import service", sealed_block.number());
+        let block_number = sealed_block.number();
+        info!("🌐 Broadcasting block {} via P2P import service and direct notification", block_number);
         
         // Create a NewBlock message as if it came from the network
         let new_block = NewBlock {
             block: sealed_block.clone().unseal(),
-            td: U128::from(sealed_block.number() + sealed_block.difficulty().to::<u64>()), // Simplified TD for local development
+            td: U128::from(block_number), // Simplified TD for local development
         };
         
         let bsc_new_block = BscNewBlock(new_block);
@@ -663,11 +664,80 @@ where
         // Use a fake peer ID for local validator
         let local_peer_id = PeerId::random();
         
-        // Submit through the import service as if it came from P2P network
+        // Submit through the import service for P2P distribution
         import_handle.send_block(block_message, local_peer_id)
             .map_err(|e| format!("Failed to send block to import service: {}", e))?;
         
-        info!("✅ Block {} sent to import service for canonical chain integration", sealed_block.number());
+        info!("✅ Block {} sent to import service for P2P distribution", block_number);
+        
+        // Also directly notify other validators via HTTP for local dev network
+        self.notify_local_validators_http(sealed_block).await;
+        
+        Ok(())
+    }
+    
+    /// Directly notify other validators via HTTP API (for local dev network)
+    async fn notify_local_validators_http(&self, sealed_block: &SealedBlock<BscBlock>) {
+        let block_number = sealed_block.number();
+        info!("📡 [HTTP NOTIFY] Directly notifying other validators about block {}", block_number);
+        
+        // List of validator ports (excluding current validator)
+        let validator_ports = [8545, 8547, 8549];
+        let current_port = 8545; // TODO: Get current validator port dynamically
+        
+        for port in validator_ports {
+            if port != current_port {
+                if let Err(e) = self.notify_validator_http(port, sealed_block).await {
+                    warn!("Failed to notify validator on port {}: {}", port, e);
+                } else {
+                    info!("✅ [HTTP NOTIFY] Successfully notified validator on port {}", port);
+                }
+            }
+        }
+    }
+    
+    /// Notify a specific validator via HTTP about a new block
+    async fn notify_validator_http(
+        &self,
+        port: u16, 
+        sealed_block: &SealedBlock<BscBlock>
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        // Create block data for notification
+        let block_data = serde_json::json!({
+            "number": format!("0x{:x}", sealed_block.number()),
+            "hash": format!("0x{:x}", sealed_block.hash()),
+            "parentHash": format!("0x{:x}", sealed_block.parent_hash()),
+            "miner": format!("0x{:x}", sealed_block.beneficiary()),
+            "timestamp": format!("0x{:x}", sealed_block.timestamp()),
+            "gasUsed": format!("0x{:x}", sealed_block.gas_used()),
+            "gasLimit": format!("0x{:x}", sealed_block.gas_limit()),
+            "difficulty": format!("0x{:x}", sealed_block.difficulty()),
+            "transactions": []
+        });
+        
+        // Send notification via HTTP (simulate P2P for local dev)
+        let client = reqwest::Client::new();
+        let url = format!("http://localhost:{}", port);
+        
+        let response = client
+            .post(&url)
+            .header("Content-Type", "application/json")
+            .json(&serde_json::json!({
+                "jsonrpc": "2.0",
+                "method": "parlia_receiveBlock",
+                "params": [block_data],
+                "id": 1
+            }))
+            .timeout(std::time::Duration::from_secs(2))
+            .send()
+            .await?;
+        
+        if response.status().is_success() {
+            info!("✅ [HTTP NOTIFY] Block {} notification sent to validator on port {}", sealed_block.number(), port);
+        } else {
+            warn!("⚠️ [HTTP NOTIFY] Failed response from validator on port {}: {}", port, response.status());
+        }
+        
         Ok(())
     }
     

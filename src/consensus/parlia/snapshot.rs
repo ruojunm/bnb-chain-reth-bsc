@@ -314,12 +314,20 @@ impl Snapshot {
     pub fn inturn_validator(&self) -> Address {
         let turn_length = u64::from(self.turn_length.unwrap_or(DEFAULT_TURN_LENGTH));
         let next_block = self.block_number + 1;
-        let offset = (next_block / turn_length) as usize % self.validators.len();
+        
+        // CRITICAL FIX: For proper turn-taking, block N should be mined by validator at index (N-1)
+        // This ensures block 1 is mined by validator[0], block 2 by validator[1], etc.
+        let offset = ((next_block - 1) / turn_length) as usize % self.validators.len();
         let next_validator = self.validators[offset];
         
         tracing::debug!(
             "inturn_validator debug info, snapshot_block={}, next_block={}, turn_length={}, offset={}, validators_len={}, next_validator=0x{:x}",
             self.block_number, next_block, turn_length, offset, self.validators.len(), next_validator
+        );
+        
+        tracing::info!(
+            "🎯 TURN CALCULATION: Block {} should be mined by validator[{}] = 0x{:x} (total validators: {})",
+            next_block, offset, next_validator, self.validators.len()
         );
         
         next_validator
