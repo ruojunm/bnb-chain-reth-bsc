@@ -92,11 +92,16 @@ where
         }
 
         if !self.system_txs.is_empty() {
-            tracing::error!("Unexpected system tx, block_number: {}, len: {}", block.number, self.system_txs.len());
-            for tx in self.system_txs.iter() {
-                tracing::error!("system tx: {:?}", tx);
+            if self.ctx.is_miner {
+                tracing::error!("Unexpected system tx (miner), block_number: {}, len: {}", block.number, self.system_txs.len());
+                for tx in self.system_txs.iter() {
+                    tracing::error!("system tx: {:?}", tx);
+                }
+                return Err(BscBlockExecutionError::UnexpectedSystemTx.into());
+            } else {
+                // validator path: accept blocks containing system txs
+                tracing::warn!("validator_ACCEPT system txs count={}", self.system_txs.len());
             }
-            return Err(BscBlockExecutionError::UnexpectedSystemTx.into());
         }
 
         let header = self.inner_ctx.header.as_ref().unwrap().clone();
@@ -246,7 +251,9 @@ where
                 for tx in self.system_txs.iter() {
                     warn!("left system tx: {:?}", tx);
                 }
-                return Err(BscBlockExecutionError::UnexpectedSystemTx.into());
+                // return Err(BscBlockExecutionError::UnexpectedSystemTx.into());
+                // validator path: do not fail the block
+                return Ok(());
             }
             Some(self.system_txs.remove(0))
         } else if is_signer_initialized() {

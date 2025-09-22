@@ -159,11 +159,66 @@ where
             return;
         }
 
-        let payload_fut = self.new_payload(block.clone(), peer_id);
-        self.pending_imports.push(payload_fut);
+        let engine = self.engine.clone();
+        let block_for_outcome = block.clone();
 
-        let fcu_fut = self.update_fork_choice(block, peer_id);
-        self.pending_imports.push(fcu_fut);
+        use std::time::Duration;
+        use tokio::time::sleep;
+        use reth_network::import::{BlockImportError, BlockValidation};
+        use alloy_rpc_types::engine::PayloadStatusEnum;
+
+        let fut = Box::pin(async move {
+            let sealed = block.block.0.block.clone().seal();
+            let head = sealed.hash();
+            let mut payload = BscPayloadTypes::block_to_payload(sealed);
+
+            // Retry newPayload a few times if it errors
+            let mut np = engine.new_payload(payload).await;
+            let mut attempts = 0;
+            while np.is_err() && attempts < 5 {
+                tracing::warn!("block_import: newPayload error: {:?}", np.as_ref().err());
+                sleep(Duration::from_millis(50)).await;
+                // rebuild payload from the original block (cheap clone)
+                let resealed = block.block.0.block.clone().seal();
+                payload = BscPayloadTypes::block_to_payload(resealed);
+                np = engine.new_payload(payload).await;
+                attempts += 1;
+            }
+
+            let np_status = np.as_ref().ok().map(|s| s.status.clone());
+            tracing::info!("block_import: newPayload status = {:?}", np_status);
+
+            // Only issue FCU once newPayload delivered (Ok)
+            if np.is_ok() {
+                let state = ForkchoiceState { head_block_hash: head, safe_block_hash: head, finalized_block_hash: head };
+                let mut fcu = engine.fork_choice_updated(state, None, EngineApiMessageVersion::default()).await;
+                let mut fcu_status = fcu.as_ref().ok().map(|r| r.payload_status.status.clone());
+                tracing::info!("block_import: FCU status = {:?}", fcu_status);
+
+                if matches!(fcu_status, Some(PayloadStatusEnum::Syncing)) {
+                    for _ in 0..5 {
+                        sleep(Duration::from_millis(50)).await;
+                        fcu = engine.fork_choice_updated(state, None, EngineApiMessageVersion::default()).await;
+                        fcu_status = fcu.as_ref().ok().map(|r| r.payload_status.status.clone());
+                        tracing::info!("block_import: FCU retry status = {:?}", fcu_status);
+                        if matches!(fcu_status, Some(PayloadStatusEnum::Valid)) { break; }
+                    }
+                }
+            } else {
+                tracing::error!("block_import: newPayload failed after retries; skipping FCU");
+            }
+
+            Some(Outcome {
+                peer: peer_id,
+                result: match np_status {
+                    Some(PayloadStatusEnum::Invalid { validation_error }) =>
+                        Err(BlockImportError::Other(validation_error.into())),
+                    _ => Ok(BlockValidation::ValidBlock { block }),
+                },
+            })
+        });
+
+        self.pending_imports.push(fut);
     }
 }
 

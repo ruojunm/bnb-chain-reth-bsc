@@ -70,6 +70,9 @@ where
             state_root,
             ..
         } = input;
+        
+        tracing::debug!("Assemble block, block_number: {}", evm_env.block_env.number);
+
 
         // Use the base EthBlockExecutionCtx for compatibility
         let eth_ctx = ctx.as_eth_context();

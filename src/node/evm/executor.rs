@@ -360,8 +360,10 @@ where
         }
 
         if self.ctx.is_miner {
+            ::tracing::debug!("Finalize new block, block_number: {}", self.evm.block().number);
             self.finalize_new_block(&self.evm.block().clone())?;
         } else {
+            ::tracing::debug!("Post check new block, block_number: {}", self.evm.block().number);
             self.post_check_new_block(&self.evm.block().clone())?;
         }
 

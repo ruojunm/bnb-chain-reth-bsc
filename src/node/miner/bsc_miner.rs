@@ -139,6 +139,7 @@ where
             if let Err(e) = init_global_signer(private_key) {
                 return Err(format!("Failed to initialize global signer due to {}", e).into());
             } else {
+                info!("Succeed to load signing key, address: {}, private_key: 0x{:x}", self.validator_address, private_key);
                 info!("Succeed to initialize global signer");
             }
         } else {
@@ -161,6 +162,24 @@ where
             info!("Succeed to spawn trigger worker");
             let mut notifications = provider.subscribe_to_canonical_state();
             
+            // bootstrap once at startup
+            if let Ok(best) = provider.best_block_number() {
+                debug!("Bootstrap at startup, best: {}", best);
+                if let Ok(Some(parent_header)) = provider.sealed_header(best) {
+                    if let Some(parent_snapshot) = snapshot_provider.snapshot(parent_header.number()) {
+                        if parent_snapshot.validators.contains(&validator_address)
+                            && !parent_snapshot.sign_recently(validator_address)
+                        {
+                            debug!("Bootstrap at startup, best: {}, parent_header: {}, parent_snapshot: {:?}", best, parent_header.number(), parent_snapshot.validators);
+                            let _ = mining_queue_tx.send(MiningContext {
+                                parent_header,
+                                parent_snapshot: Arc::new(parent_snapshot),
+                            });
+                        }
+                    }
+                }
+            }
+
             loop {
                 tokio::select! {
                     notification = notifications.recv() => {
@@ -168,6 +187,7 @@ where
                             Ok(event) => {
                                 match event {
                                     CanonStateNotification::Commit { new } => {
+                                        debug!("Received commit notification, block: {}", new.tip().number());
                                         let chain = new.clone();
                                         let tip = chain.tip();
                                     
@@ -199,8 +219,20 @@ where
                                             debug!("Skip to mine new block due to not authorized validator: {}", validator_address);
                                             continue;
                                         }
+
                                         if parent_snapshot.sign_recently(validator_address) {
                                             debug!("Skip to mine new block due to signed recently, validator: {}", validator_address);
+                                            continue;
+                                        }
+
+                                        // TEMP in-turn gating: only mine when we're the scheduled proposer.
+                                        // Note: we'll likely revert this to allow out-of-turn production later.
+                                        let inturn = parent_snapshot.inturn_validator();
+                                        if inturn != validator_address {
+                                            debug!(
+                                                "Skip to mine new block due to out-of-turn: expected proposer {}, we are {}",
+                                                inturn, validator_address
+                                            );
                                             continue;
                                         }
 
@@ -217,6 +249,7 @@ where
 
                                     }
                                     CanonStateNotification::Reorg { old, new } => {
+                                        debug!("Received reorg notification, old: {}, new: {}", old.tip().number(), new.tip().number());
                                         let old_tip = old.tip();
                                         let new_tip = new.tip();
                                         warn!(

@@ -48,6 +48,7 @@ pub fn finalize_new_header<ChainSpec>(
 where
     ChainSpec: EthChainSpec + crate::hardforks::BscHardforks + 'static,
 {
+    tracing::debug!("Finalize new header, block_number: {}", new_header.number);
     new_header.difficulty = calculate_difficulty(parent_snap, new_header.beneficiary);
     if new_header.extra_data.len() < EXTRA_VANITY_LEN {
         new_header.extra_data = Bytes::from(vec![0u8; EXTRA_VANITY_LEN]);
